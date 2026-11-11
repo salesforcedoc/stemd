@@ -1,0 +1,19 @@
+[package]
+name = "stemd-models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "The model catalogue, its pinned digests, and fetching what is missing."
+
+# Shared by the desktop server and the iOS app. Deliberately free of the
+# server: presets and digests are the one thing that must not drift between the
+# two binaries, because `model_id` is derived from them.
+[dependencies]
+stemd-core = { path = "../stemd-core", default-features = false }
+anyhow.workspace = true
+tracing.workspace = true
+# First-run model fetch: HTTP plus a pinned digest.
+ureq = "3.4.0"
+sha2 = "0.10"

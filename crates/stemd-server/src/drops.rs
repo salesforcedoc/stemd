@@ -19,6 +19,7 @@ use stemd_core::{Audio, DspMode, PcmFormat, Progress, Stage};
 
 use crate::api::AppState;
 use crate::cache::{Entry, Ingredients, Output};
+use crate::details::TrackDetails;
 use crate::queue::QueuedWork;
 
 /// Recent drops kept for the window's list. Older ones fall off the end.
@@ -74,6 +75,8 @@ pub struct Dropped {
     pub source: PathBuf,
     /// File name without the extension, which is what the window shows.
     pub title: String,
+    /// Song details, when the caller knows more than the file name (ProLink).
+    details: TrackDetails,
     state: Mutex<State>,
 }
 
@@ -90,6 +93,7 @@ impl Dropped {
         Arc::new(Self {
             source: dir.join(format!("{title}.wav")),
             title: title.to_owned(),
+            details: TrackDetails::default(),
             state: Mutex::new(State::Done(Finished {
                 dir: dir.to_path_buf(),
                 parts: (0..parts).map(|i| format!("stem {i}")).collect(),
@@ -129,9 +133,30 @@ impl Drops {
     /// track takes long enough to drop frames, and the window has to keep
     /// painting the progress of the job this creates.
     pub fn accept(self: &Arc<Self>, state: &Arc<AppState>, path: PathBuf) -> Arc<Dropped> {
+        self.accept_with_details(state, path, TrackDetails::default())
+    }
+
+    /// Take a file and start working on it, with whatever is known about it.
+    ///
+    /// The ProLink monitor fills the whole record; a file dropped on the window
+    /// knows only its path. Missing fields are filled from the path here so the
+    /// cache detail file always names the source.
+    pub fn accept_with_details(
+        self: &Arc<Self>,
+        state: &Arc<AppState>,
+        path: PathBuf,
+        mut details: TrackDetails,
+    ) -> Arc<Dropped> {
+        let title = title_of(&path);
+        details.source.get_or_insert_with(|| "drop".to_owned());
+        details.local_file.get_or_insert_with(|| path.clone());
+        details.title.get_or_insert_with(|| title.clone());
+        details.clip();
+
         let dropped = Arc::new(Dropped {
-            title: title_of(&path),
+            title,
             source: path,
+            details,
             state: Mutex::new(State::Reading),
         });
 
@@ -201,7 +226,6 @@ fn remove_stems(dir: &Path) {
 
 /// Decode, separate, and write the stems out.
 fn run(state: &Arc<AppState>, item: &Arc<Dropped>) -> Result<()> {
-    let mix = read(state, &item.source)?;
     let settings = state.settings.get();
     let output = Output {
         format: settings.format,
@@ -210,9 +234,38 @@ fn run(state: &Arc<AppState>, item: &Arc<Dropped>) -> Result<()> {
         // A drop writes files, it does not feed a client's subtraction.
         dsp: DspMode::General,
     };
+    let model = state.switcher.identity();
+    let source_hash = crate::source::file_hash(&item.source).ok();
 
-    let (entry, cached) = separate(state, item, &mix, output)?;
-    let finished = write_out(&item.source, &entry, cached)?;
+    // The same preflight a deck does before uploading, and worth more here: the
+    // cache can answer without the file being decoded at all. Everything the
+    // key would distinguish is part of the match, so this can never hand back
+    // stems at a rate or in a container the settings did not ask for.
+    if let Some(hash) = source_hash.as_deref()
+        && let Some(entry) = state.cache.find_source(
+            hash,
+            output.format,
+            output.rate.hz(),
+            output.dsp,
+            output.derived,
+            &model,
+        )
+        && entry.duration_secs() <= state.max_track_secs
+    {
+        let finished = write_out(state, &item.source, &entry, true)?;
+        tracing::info!(
+            "{}: {} parts written to {} (already separated)",
+            item.title,
+            finished.parts.len(),
+            finished.dir.display()
+        );
+        item.set(State::Done(finished));
+        return Ok(());
+    }
+
+    let mix = read(state, &item.source)?;
+    let (entry, cached) = separate(state, item, &mix, output, source_hash, model)?;
+    let finished = write_out(state, &item.source, &entry, cached)?;
     tracing::info!(
         "{}: {} parts written to {}",
         item.title,
@@ -267,6 +320,8 @@ fn separate(
     item: &Arc<Dropped>,
     mix: &Audio,
     output: Output,
+    source_hash: Option<String>,
+    model: String,
 ) -> Result<(Arc<Entry>, bool)> {
     // Hashed from the same bytes an upload would have carried, so a drop and a
     // deck asking for the same track land on the same cache entry.
@@ -280,7 +335,7 @@ fn separate(
         out_rate: output.rate,
         include_derived: output.derived,
         dsp: output.dsp,
-        model: &state.switcher.identity(),
+        model: &model,
     });
     std::mem::drop(pcm);
 
@@ -299,6 +354,11 @@ fn separate(
                 job: Arc::clone(&job),
                 mix: mix.clone(),
                 output,
+                provenance: crate::cache::Provenance {
+                    details: item.details.clone(),
+                    model,
+                    source_hash,
+                },
             })?;
             job
         }
@@ -338,7 +398,7 @@ fn separate(
 ///
 /// Copied rather than moved: the entry stays in the cache, so a deck asking for
 /// the same track over the network still gets it without separating again.
-fn write_out(source: &Path, entry: &Entry, cached: bool) -> Result<Finished> {
+fn write_out(state: &AppState, source: &Path, entry: &Entry, cached: bool) -> Result<Finished> {
     let dir = output_dir(source);
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
 
@@ -353,7 +413,7 @@ fn write_out(source: &Path, entry: &Entry, cached: bool) -> Result<Finished> {
             .with_context(|| format!("copying {} into {}", name, dir.display()))?;
         // Tells the cache this entry was collected, so the rule that reaps
         // separations nobody pulled leaves it alone.
-        entry.mark_fetched(&stem.name);
+        state.cache.mark_fetched(entry, &stem.name);
         if stem.gain != 1.0 {
             scaled.push((stem.name.clone(), stem.gain));
         }

@@ -53,16 +53,36 @@ Job handles are not a third policy: a job is dropped when the cache reaps the
 stems it points at, so there is one lifecycle rather than two that can disagree.
 Failures hold no stems and expire on the same clock.
 
-The index is in memory and cleared at startup: whether an entry was ever pulled
-is not recorded on disk, and rule 1 turns on exactly that. Inventing a
-classification for files that cannot be classified is worse than paying for the
-first separation again.
+The index is on disk. `index.json` in the cache root lists every loaded entry,
+and each entry directory carries the same object as `detail.json`. Both are
+plain JSON: a reader can scan one file to see every separation, or copy a single
+folder and keep its description with it. The fields are the song details
+(`title`, `artist`, `album` when the source knew them), where they came from
+(`source`, `local_file`, `medium_path`, `deck`, `slot`, `track_id`), and the
+geometry and recipe (`sample_rate`, `channels`, `frames`, `duration_secs`,
+`format`, `derived`, `dsp`, `model`, `model_residual_db`, `separation_secs`) plus
+each stem's file, size and gain.
 
-Entries are published by writing to `{key}.part/` and renaming, so a kill
-mid-write cannot leave a directory that looks complete. Deleting an entry while a
-client is streaming from it is safe: the handler opens the file first, and an
-unlinked file stays readable through an open descriptor. A fetch that has not
-opened yet gets a `410`.
+The cache survives restarts. `Cache::new` reads every `detail.json`, checks that
+each named stem is still there, and rebuilds the in-memory index; a folder
+without a readable detail (a legacy entry or an interrupted write) is left in
+place and reported rather than deleted, because the stems might be someone's.
+Fetch state and the wall-clock last use are persisted too, so the two collection
+rules keep working across launches: an entry that was collected stays collected,
+and an uncollected one keeps its age. The startup pass also enforces
+`--cache-max-gb` and rewrites `index.json`.
+
+Entries are published by writing the stems and `detail.json` to `{key}.part/`
+and renaming, so a kill mid-write cannot leave a directory that looks complete.
+Deleting an entry while a client is streaming from it is safe: the handler opens
+the file first, and an unlinked file stays readable through an open descriptor. A
+fetch that has not opened yet gets a `410`.
+
+Where the details come from: an HTTP client may send `title`, `artist` and
+`album` as optional query parameters; a dropped file contributes its name and
+path; the ProLink monitor contributes the whole rekordbox row plus the source
+deck, slot and track id. None of them affect the cache key — they are labels, not
+audio.
 
 ## Queue
 
@@ -130,6 +150,45 @@ interfaces: en0=192.0.2.11 en7=198.51.100.4 bridge100=203.0.113.1
 
 `--no-mdns` disables it; `--instance` sets the name. Advertisement failure is
 logged and ignored: a client with the address configured out of band still works.
+
+## ProLink
+
+`--prolink` watches a Pioneer Pro DJ Link network. The window's **Decks** section
+lists every player it hears and the track each has loaded. It is a display by
+default: no audio is fetched. Adding `--prolink-download` makes a newly seen
+track download once and enter the same drop path as a file dropped on the
+window, so its stems appear beside it and in the **Separated** list. Display-only
+still reads `export.pdb` for titles when a track is loaded; it does not read
+audio.
+
+The monitor is passive until it is not. It binds UDP 50000 (keepalives) and
+50002 (status) and sends nothing while the network holds no real player. A CDJ
+publishes its loaded track only in status packets, and unicasts those to peers
+that have announced themselves, so once a keepalive is heard the monitor
+broadcasts a 54-byte virtual-CDJ keepalive every 1.5 s. It stops announcing as
+soon as the player TTL (5 s) expires. A network with nothing connected therefore
+sees no ProLink traffic from stemd at all.
+
+A track's identity is `(source player, slot, track id, metadata hash)`. The hash
+covers the PDB's title, artist, album and file size rather than the audio, so the
+decision to download is made before reading the file. `index.json` beside the
+downloads remembers keys across launches and drops entries whose file has
+disappeared. The download is written to a `.part` file and renamed into place
+only after its byte count matches; a quit mid-transfer leaves nothing that looks
+finished.
+
+Reading a medium is NFSv2 over UDP: the portmapper names mountd and nfsd, MOUNT
+takes `/C/` for USB or `/B/` for SD, LOOKUP walks the path from `export.pdb`, and
+READ pulls 8192-byte chunks, falling back to 1280 if a fragmented read times out.
+The mount is released with UMNT. `export.pdb` is parsed for tracks, artists and
+albums only; strings are UTF-16LE at +4, which is where the common implementation
+gets non-ASCII titles wrong.
+
+Only a rekordbox-analyzed track on USB or SD has a row and a path in
+`export.pdb`. Unanalyzed files (which need the dbserver), CDs and tracks loaded
+from rekordbox software are shown in the Decks section but not downloaded. The
+normal separation limits still apply: a download that will not decode, or is
+longer than `--max-track-minutes`, appears as a failed row in **Separated**.
 
 ## Window
 

@@ -1,0 +1,42 @@
+[package]
+name = "stemd-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+description = "On-device stem separation for iOS: a static library with a small HTTP surface."
+
+# A static library for the app to link, and an rlib so the API can be tested on
+# the host without an Xcode project.
+[lib]
+name = "stemd_ios"
+crate-type = ["staticlib", "rlib"]
+
+# Deliberately not a second implementation of the desktop server. The pipeline
+# is `stemd-core`; this crate only adds the app-facing surface: an encoded file
+# in, FLAC/WAV stems out, no raw-PCM upload.
+[dependencies]
+stemd-core = { path = "../stemd-core", default-features = false }
+stemd-audio = { path = "../stemd-audio" }
+stemd-models = { path = "../stemd-models" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "fs",
+    "sync",
+] }
+tokio-util = { version = "0.7.19", features = ["io"] }
+parking_lot = "0.12.5"
+sha2 = "0.10"
+# The share token. A phone on a club Wi-Fi is not a trusted network, and the
+# server is serving the user's audio.
+getrandom = "0.3"

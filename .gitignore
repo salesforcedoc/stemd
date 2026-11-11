@@ -40,5 +40,9 @@ __pycache__/
 # Finder droppings
 .DS_Store
 
+# Xcode's per-user state; the project itself and its shared scheme are tracked.
+xcuserdata/
+DerivedData/
+
 # Agent tooling state, including worktrees that are their own repositories
 .claude/

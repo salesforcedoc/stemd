@@ -13,6 +13,7 @@ use eframe::egui::{self, Color32, Stroke};
 
 use crate::drops::{Dropped, Drops, State};
 
+use super::reveal;
 use super::theme::{CARD_RADIUS, Palette, Sheen};
 
 const ROW_HEIGHT: f32 = 40.0;
@@ -204,7 +205,7 @@ fn row(
         // second copy of the same track. Opening nothing and saying nothing is
         // the one outcome that reads as broken, so the row goes instead.
         if finished.dir.is_dir() {
-            reveal(&finished.dir);
+            reveal::show(&finished.dir);
         } else {
             tracing::info!("{} is gone; dropping the row", finished.dir.display());
             drops.forget(item);
@@ -249,26 +250,5 @@ fn detail(state: &State) -> String {
             finished.secs
         ),
         State::Failed(why) => why.clone(),
-    }
-}
-
-/// Open the stems folder in the system's file manager.
-///
-/// A failure here is worth a log line and nothing more: the stems are written
-/// either way, and the row still shows where they are.
-fn reveal(dir: &std::path::Path) {
-    // macOS takes the absolute path rather than bare `open`: a bundle launched
-    // from Finder inherits a minimal PATH, and "the button does nothing" is a
-    // bad way to find that out. The other two are resolved through PATH because
-    // that is the only place they are.
-    #[cfg(target_os = "macos")]
-    let mut cmd = std::process::Command::new("/usr/bin/open");
-    #[cfg(windows)]
-    let mut cmd = std::process::Command::new("explorer.exe");
-    #[cfg(target_os = "linux")]
-    let mut cmd = std::process::Command::new("xdg-open");
-
-    if let Err(err) = cmd.arg(dir).spawn() {
-        tracing::warn!("could not reveal {}: {err}", dir.display());
     }
 }

@@ -8,7 +8,9 @@ members = [
     "crates/stemd-audio",
     "crates/stemd-core",
     "crates/stemd-mlx",
+    "crates/stemd-models",
     "crates/stemd-server",
+    "crates/stemd-ios",
     "crates/stemd-cli",
 ]
 

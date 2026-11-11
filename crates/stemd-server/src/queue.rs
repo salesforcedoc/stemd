@@ -18,9 +18,7 @@ use anyhow::Result;
 use parking_lot::{Condvar, Mutex};
 use stemd_core::{Audio, BackendInfo, Cancelled, Progress, Separate, Stage, Stems};
 
-use crate::cache::Output;
-
-use crate::cache::Cache;
+use crate::cache::{Cache, Output, Provenance};
 use crate::jobs::Job;
 
 /// How a separator reaches the worker: as a recipe, never as a finished model.
@@ -36,6 +34,9 @@ pub struct QueuedWork {
     pub mix: Audio,
     /// Format, rate and part set the client asked for.
     pub output: Output,
+    /// What is known about the source and which model produced it, recorded in
+    /// the cache detail file.
+    pub provenance: Provenance,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -339,7 +340,7 @@ struct Claimed {
 /// What the worker found waiting for it.
 enum Next {
     Install(Staged),
-    Job(Claimed),
+    Job(Box<Claimed>),
 }
 
 impl Inner {
@@ -368,7 +369,7 @@ impl Inner {
                     id: work.job.id.clone(),
                     cancel: Arc::clone(&cancel),
                 });
-                return Some(Next::Job(Claimed { work, cancel }));
+                return Some(Next::Job(Box::new(Claimed { work, cancel })));
             }
             self.ready.wait(&mut pending);
         }
@@ -509,7 +510,14 @@ fn publish(job: &Job, work: &QueuedWork, stems: &Stems, cache: &Cache, elapsed: 
     //  `separation_secs` is the model's cost by definition. Writing can cost more than
     //  separating, and used to appear in no total anyone saw.
     let writing = std::time::Instant::now();
-    match cache.publish(&job.key, &work.mix, stems, work.output, elapsed) {
+    match cache.publish(
+        &job.key,
+        &work.mix,
+        stems,
+        work.output,
+        elapsed,
+        work.provenance.clone(),
+    ) {
         Ok(entry) => {
             tracing::info!(
                 job = %job.id,
@@ -831,6 +839,11 @@ mod tests {
                     rate: OutputRate::default(),
                     derived: false,
                     dsp: DspMode::default(),
+                },
+                provenance: Provenance {
+                    details: Default::default(),
+                    model: "test".into(),
+                    source_hash: None,
                 },
             })
             .expect("queue has room");

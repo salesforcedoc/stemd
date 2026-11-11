@@ -2,6 +2,8 @@
 
 ```text
 GET    /v1/health                     runtime, model, queue and cache state
+GET    /v1/jobs/lookup?source_hash=  200 + a finished job for that source
+                                      404 when this server has not seen it
 POST   /v1/jobs                       raw PCM body -> 202 + job
                                       200 + a finished job on a cache hit
                                       429 when the queue is full
@@ -70,10 +72,39 @@ name.
 
 ## What a client must do
 
-Four things. The reference implementation is
+Five things. The reference implementation is
 [stemd-cli](../crates/stemd-cli/src/main.rs).
 
-### 1. Upload raw PCM
+### 1. Ask before uploading (optional)
+
+A client that can hash its source file can find out whether this server already
+has the separation before it sends a byte:
+
+```text
+GET /v1/jobs/lookup?source_hash=<16 hex>&format=flac
+    [&output_sample_rate=96000][&dsp_mode=1][&include_derived=false]
+```
+
+`200` is the same job document a `POST /v1/jobs` answers with, already finished;
+`404` means upload it. Poll and fetch its stems exactly as in steps 3 and 4.
+
+`source_hash` is the client's own identity for the file, not the cache key:
+FNV-1a over the file's size as a little-endian `u64`, then its first 64 KiB and
+last 64 KiB, written as 16 lowercase hex characters. (The offset basis is the
+one the deck's C code uses, not the textbook constant.) It is an alias the
+server stores beside an entry; the key itself is still a hash of the uploaded
+bytes.
+
+Every query field describes the separation a `POST` would have asked for, and
+omitted fields take the `POST` defaults. The output container, rate, DSP mode
+and `include_derived` all have to match — a hit that ignored them could return
+audio at a rate or from a filter the caller never asked for.
+
+Send `source_hash` on the `POST` too. The server records it with the new entry,
+and a `POST` answered from cache tags the older entry, so the next load of the
+same file is a lookup hit.
+
+### 2. Upload raw PCM
 
 Not an encoded file. The client already has decoded samples, and decoding them
 again server-side risks the two decoders disagreeing on encoder delay, which
@@ -92,11 +123,24 @@ POST /v1/jobs?sample_rate=44100&channels=2&format=f32le
 | `output_sample_rate` | `default_output_sample_rate` | `24000`, `44100`, `48000` or `96000` |
 | `include_derived` | `false` | ship the derived part too, rather than leaving the client to rebuild it |
 | `dsp_mode` | `0` | filter the output conversion runs through; see below |
+| `title`, `artist`, `album` | empty | optional labels, written to the cache detail file only |
+| `source_hash` | empty | the client's identity for the source file; stored as an alias for `GET /v1/jobs/lookup` |
+
+`title`, `artist` and `album` are optional annotations. They never affect the
+cache key or the audio; the server writes them into `detail.json` beside the
+stems and into `index.json` in the cache root so the cache can be scanned
+without a client.
+
+`source_hash` is an alias, not a key: it never changes what a POST separates or
+which entry it hits, and it is dropped if it is not 1-64 alphanumeric
+characters. Sending it makes the next load of the same file answerable by
+`GET /v1/jobs/lookup`; omitting it leaves the entry matchable only by its
+content key.
 
 The two defaults are set in the server's window and persist across its launches,
 so read them from `/v1/health` rather than assuming, they are not constants.
-Every parameter here is part of the cache key, so two jobs differing in any of
-them are two separations.
+Every parameter here except the labels and `source_hash` is part of the cache
+key, so two jobs differing in any of them are two separations.
 
 Upload at the model's own rate where you can. Anything else is converted on
 arrival, which costs time and puts a filter between the client's samples and the
@@ -137,7 +181,7 @@ curl -X POST --data-binary @track.pcm \
   "http://host:8420/v1/jobs?format=s16le&output_sample_rate=96000&dsp_mode=1"
 ```
 
-### 2. Poll the returned job id
+### 3. Poll the returned job id
 
 Treat it as the job to poll, not as proof a new one was created: a request
 matching a separation already running returns *that* job. A `200` instead of
@@ -158,7 +202,7 @@ than a chunk count.
 In practice a client rarely sees it, since the handle it cancelled is gone by
 then.
 
-### 3. Download both stems and apply `gain`
+### 4. Download both stems and apply `gain`
 
 ```json
 {
@@ -199,7 +243,7 @@ arithmetic is right", and the leftover it used to describe is inside
 
 The three parts sum exactly regardless of its value, on every preset.
 
-### 4. Rebuild the third part while mixing
+### 5. Rebuild the third part while mixing
 
 Never materialise it. Expanding `out = d·D + h·H + v·V` with `D = mix − H − V`
 collapses to:

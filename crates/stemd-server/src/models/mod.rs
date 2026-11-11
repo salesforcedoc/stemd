@@ -4,6 +4,10 @@
 //! `models/` is gitignored, so a fresh clone would otherwise build a binary with
 //! no model to load and no way to make one. A pinned URL fixes both.
 //!
+//! The catalogue itself lives in [`stemd_models`], because the iOS app loads
+//! the same files and must agree about their names and digests. What stays here
+//! is the desktop answer to where they land.
+//!
 //! # Where they land
 //!
 //! Not next to the executable. On macOS the bundle's contents are covered by the
@@ -19,31 +23,25 @@
 //! integrity  hashing what is on disk against those digests
 //! download   fetching what is missing
 //! ```
+//!
+//! The last three are `stemd_models`; this module adds the directory they land
+//! in and the search order around them.
 
-mod download;
-mod integrity;
-mod preset;
-
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-pub use download::fetch;
-pub use integrity::verify;
-pub use preset::{DEFAULT_PRESET, ModelSource, Preset, RETIRED, WEIGHTS_EXTENSION};
+pub use stemd_models::{DEFAULT_PRESET, Preset, RETIRED, WEIGHTS_EXTENSION};
+pub use stemd_models::{fetch, is_complete, locate, verify};
 
 // One pinned file at a time, and the type describing one. Only `cuda` wants
 // either: everything else fetches a whole `ModelSource`. Gated rather than
 // always exported, so the platform that cannot install CUDA does not carry two
 // names nothing there can use.
 #[cfg(windows)]
-pub use download::fetch_one as fetch_file;
+pub use stemd_models::fetch_one as fetch_file;
 #[cfg(windows)]
-pub use preset::RemoteFile;
-
-/// Bytes hashed or copied per read. Large enough that a 675 MB artefact is not
-/// resident, small enough to stay in cache.
-const READ_CHUNK: usize = 1 << 20;
+pub use stemd_models::RemoteFile;
 
 /// The application's data directory, created if absent.
 ///
@@ -79,52 +77,4 @@ pub fn cache_dir() -> Result<PathBuf> {
     let dir = support_dir()?.join("models");
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     Ok(dir)
-}
-
-/// Where a preset's artefact is, if it is anywhere.
-///
-/// Mirrors the startup search order, so the window and the command line cannot
-/// disagree about whether a switch needs the network.
-pub fn locate(dirs: &[PathBuf], preset: Preset) -> Option<PathBuf> {
-    dirs.iter()
-        .find(|d| is_complete(d, preset.source()))
-        .cloned()
-}
-
-/// True when every file of `source` is present in `dir`.
-///
-/// Presence only: see [`mismatched`] for whether the contents are right.
-pub fn is_complete(dir: &Path, source: &ModelSource) -> bool {
-    source.files.iter().all(|f| dir.join(f.name).is_file())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn completeness_needs_every_file() {
-        let dir = std::env::temp_dir().join(format!("stemd-models-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
-        // Named from the preset rather than spelled out, so retiring or
-        // renaming one moves this test with it instead of breaking it.
-        let source = Preset::Fast.source();
-
-        assert!(!is_complete(&dir, source));
-        for file in source.files {
-            std::fs::write(dir.join(file.name), b"x").unwrap();
-        }
-        assert!(is_complete(&dir, source));
-
-        // A directory holding another preset's artefact is not this one's.
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).unwrap();
-        for file in Preset::Balanced.source().files {
-            std::fs::write(dir.join(file.name), b"x").unwrap();
-        }
-        assert!(!is_complete(&dir, source));
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
 }

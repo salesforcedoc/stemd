@@ -34,6 +34,7 @@ const WAV_BITS: u16 = 16;
 /// `q=0` costs 18x realtime against this one's 47x and differs by -47 dB, below
 /// the coding noise both add. Benchmarks are in the tests below, marked
 /// `#[ignore]`.
+#[cfg(feature = "mp3")]
 const MP3_QUALITY: mp3lame_encoder::Quality = mp3lame_encoder::Quality::NearBest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,10 +212,23 @@ fn to_wav(audio: &Audio, gain: f32) -> Vec<u8> {
 ///
 /// LAME is fed the float samples directly. It works in float internally, so
 /// handing it 16-bit integers would quantise twice.
+#[cfg(feature = "mp3")]
 fn to_mp3(audio: &Audio, gain: f32) -> anyhow::Result<Vec<u8>> {
     to_mp3_at(audio, gain, MP3_QUALITY)
 }
 
+/// MP3 without the encoder built in.
+///
+/// The variant exists in every build so the format table and the server's
+/// parsing are the same everywhere; only the encode is missing. The iOS app
+/// never offers MP3, and the message says what happened rather than pretending
+/// the format does not exist.
+#[cfg(not(feature = "mp3"))]
+fn to_mp3(_audio: &Audio, _gain: f32) -> anyhow::Result<Vec<u8>> {
+    anyhow::bail!("MP3 encoding is not built into this target")
+}
+
+#[cfg(feature = "mp3")]
 fn to_mp3_at(
     audio: &Audio,
     gain: f32,
@@ -751,10 +765,12 @@ mod mp3_bench {
         Audio::new(channels, rate)
     }
 
+    #[cfg(feature = "mp3")]
     use mp3lame_encoder::Quality;
 
     /// The levels worth sweeping, named as LAME names them. `MP3_QUALITY` is
     /// `NearBest`.
+    #[cfg(feature = "mp3")]
     fn quality_levels() -> [(&'static str, Quality); 6] {
         [
             ("Best", Quality::Best),
@@ -767,6 +783,7 @@ mod mp3_bench {
     }
 
     /// Decode an mp3 back to interleaved samples.
+    #[cfg(feature = "mp3")]
     fn decode_mp3(bytes: &[u8]) -> Vec<f32> {
         use symphonia::core::codecs::DecoderOptions;
         use symphonia::core::formats::FormatOptions;
@@ -807,6 +824,7 @@ mod mp3_bench {
         out
     }
 
+    #[cfg(feature = "mp3")]
     fn rms_db(samples: &[f32]) -> f64 {
         if samples.is_empty() {
             return f64::NEG_INFINITY;
@@ -818,6 +836,7 @@ mod mp3_bench {
     /// What turning the quality knob down costs. Two numbers per setting: how far its
     /// output sits from `q=0`'s, and the coding noise both add against the input. The
     /// second is the scale the first has to be read against.
+    #[cfg(feature = "mp3")]
     #[test]
     #[ignore]
     fn what_does_the_quality_knob_cost() {
@@ -866,6 +885,7 @@ mod mp3_bench {
         }
     }
 
+    #[cfg(feature = "mp3")]
     #[test]
     #[ignore]
     fn how_long_does_mp3_take() {

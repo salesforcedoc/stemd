@@ -176,7 +176,7 @@ mod tests {
             std::fs::write(dir.join(f.name), b"not the model").unwrap();
         }
         // is_complete only looks at filenames, so it is happy.
-        assert!(super::super::is_complete(&dir, Preset::Balanced.source()));
+        assert!(crate::is_complete(&dir, Preset::Balanced.source()));
         // Hashing is what actually catches it.
         let files = Preset::Balanced.source().files.len();
         assert_eq!(mismatched(&dir, Preset::Balanced).len(), files);

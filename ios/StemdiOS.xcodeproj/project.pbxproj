@@ -1,0 +1,409 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2C5495FC82F044CBD635AA91 /* APILog.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD23467F63A6813AAEC058BC /* APILog.swift */; };
+		30A8A7888730149C3CBD238A /* StemdiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F264D560ADC5FBEC82383C /* StemdiOSApp.swift */; };
+		A290FA0E4C94545E6A5F272A /* DebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80679DDFBD76E9F3992B8357 /* DebugView.swift */; };
+		F8AAF852C7F17FA63D89CFCE /* StemdClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1E8E967F62D549188A9255 /* StemdClient.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		1365C7F72CEEBB9429478B7D /* stemd.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = stemd.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7B1E8E967F62D549188A9255 /* StemdClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemdClient.swift; sourceTree = "<group>"; };
+		80679DDFBD76E9F3992B8357 /* DebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugView.swift; sourceTree = "<group>"; };
+		80F264D560ADC5FBEC82383C /* StemdiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemdiOSApp.swift; sourceTree = "<group>"; };
+		8BB325F66A11A97A4F57C2A2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B9681D3361709784BAC6E46A /* StemdiOS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "StemdiOS-Bridging-Header.h"; sourceTree = "<group>"; };
+		DD23467F63A6813AAEC058BC /* APILog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APILog.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		049AD3C4A93FF6D7CF5D5455 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1365C7F72CEEBB9429478B7D /* stemd.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		1ACE9CDF818A100953A172A5 = {
+			isa = PBXGroup;
+			children = (
+				1F655D6931D2250F32769872 /* StemdiOS */,
+				049AD3C4A93FF6D7CF5D5455 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1F655D6931D2250F32769872 /* StemdiOS */ = {
+			isa = PBXGroup;
+			children = (
+				DD23467F63A6813AAEC058BC /* APILog.swift */,
+				80679DDFBD76E9F3992B8357 /* DebugView.swift */,
+				8BB325F66A11A97A4F57C2A2 /* Info.plist */,
+				7B1E8E967F62D549188A9255 /* StemdClient.swift */,
+				B9681D3361709784BAC6E46A /* StemdiOS-Bridging-Header.h */,
+				80F264D560ADC5FBEC82383C /* StemdiOSApp.swift */,
+			);
+			path = StemdiOS;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		76E619768F68BE88074DB440 /* StemdiOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 4BEC7A9B8D7FDFDFDE7B01B9 /* Build configuration list for PBXNativeTarget "StemdiOS" */;
+			buildPhases = (
+				0A09D96C562CA5469256BA44 /* Build stemd Rust library */,
+				2C8BC09101E28C2C3BE012FD /* Sources */,
+				46FEB38E1FD37066CE6EE88A /* Copy MLX Metal kernels */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = StemdiOS;
+			packageProductDependencies = (
+			);
+			productName = StemdiOS;
+			productReference = 1365C7F72CEEBB9429478B7D /* stemd.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E1CEFC02E21A065E3DA7E2B7 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+			};
+			buildConfigurationList = B0A37392DB59862CCEA0DC9A /* Build configuration list for PBXProject "StemdiOS" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 1ACE9CDF818A100953A172A5;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 049AD3C4A93FF6D7CF5D5455 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				76E619768F68BE88074DB440 /* StemdiOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		0A09D96C562CA5469256BA44 /* Build stemd Rust library */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build stemd Rust library";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\ncd \"$SRCROOT/..\"\n# Xcode's script phases do not inherit the login shell's PATH, so\n# cargo (a rustup shim in ~/.cargo/bin) is otherwise not found.\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  RUST_TARGET=aarch64-apple-ios-sim\nelse\n  RUST_TARGET=aarch64-apple-ios\nfi\nIPHONEOS_DEPLOYMENT_TARGET=17.0 \\\n  cargo build --release -p stemd-ios --target \"$RUST_TARGET\"\n";
+		};
+		46FEB38E1FD37066CE6EE88A /* Copy MLX Metal kernels */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy MLX Metal kernels";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -euo pipefail\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  RUST_TARGET=aarch64-apple-ios-sim\nelse\n  RUST_TARGET=aarch64-apple-ios\nfi\nMETAL=$(find \"$SRCROOT/../target/$RUST_TARGET/release/build\" \\\n  -path '*/out/build/lib/mlx.metallib' -print -quit)\nif [ -z \"$METAL\" ]; then\n  echo \"error: mlx.metallib not found; did the Rust build run?\" >&2\n  exit 1\nfi\ncp \"$METAL\" \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/mlx.metallib\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2C8BC09101E28C2C3BE012FD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2C5495FC82F044CBD635AA91 /* APILog.swift in Sources */,
+				A290FA0E4C94545E6A5F272A /* DebugView.swift in Sources */,
+				F8AAF852C7F17FA63D89CFCE /* StemdClient.swift in Sources */,
+				30A8A7888730149C3CBD238A /* StemdiOSApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		097F1B2BE4CE9A7569DF0B81 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = E54DN8M3Q5;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = StemdiOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-L$(SRCROOT)/../target/aarch64-apple-ios/release",
+					"-lstemd_ios",
+					"-lc++",
+					"-framework",
+					Metal,
+					"-framework",
+					Foundation,
+					"-framework",
+					Accelerate,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					Security,
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"-L$(SRCROOT)/../target/aarch64-apple-ios-sim/release",
+					"-lstemd_ios",
+					"-lc++",
+					"-framework",
+					Metal,
+					"-framework",
+					Foundation,
+					"-framework",
+					Accelerate,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					Security,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.phasimstemd.app;
+				PRODUCT_NAME = stemd;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "StemdiOS/StemdiOS-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B6E94FD7D27A7140F9F517F6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		C18B04EB3C11EF708ECA46E0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = E54DN8M3Q5;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = StemdiOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1;
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-L$(SRCROOT)/../target/aarch64-apple-ios/release",
+					"-lstemd_ios",
+					"-lc++",
+					"-framework",
+					Metal,
+					"-framework",
+					Foundation,
+					"-framework",
+					Accelerate,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					Security,
+				);
+				"OTHER_LDFLAGS[sdk=iphonesimulator*]" = (
+					"-L$(SRCROOT)/../target/aarch64-apple-ios-sim/release",
+					"-lstemd_ios",
+					"-lc++",
+					"-framework",
+					Metal,
+					"-framework",
+					Foundation,
+					"-framework",
+					Accelerate,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					Security,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.phasimstemd.app;
+				PRODUCT_NAME = stemd;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "StemdiOS/StemdiOS-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FA9622655F9B563BC0E4F421 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		4BEC7A9B8D7FDFDFDE7B01B9 /* Build configuration list for PBXNativeTarget "StemdiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C18B04EB3C11EF708ECA46E0 /* Debug */,
+				097F1B2BE4CE9A7569DF0B81 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B0A37392DB59862CCEA0DC9A /* Build configuration list for PBXProject "StemdiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA9622655F9B563BC0E4F421 /* Debug */,
+				B6E94FD7D27A7140F9F517F6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E1CEFC02E21A065E3DA7E2B7 /* Project object */;
+}

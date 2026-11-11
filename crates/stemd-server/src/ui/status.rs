@@ -9,6 +9,7 @@ use eframe::egui::{self, Color32};
 
 use crate::api::AppState;
 
+use super::reveal;
 use super::theme::Palette;
 
 /// Text size along the bar. Everything here is secondary to the drop zone, but
@@ -96,27 +97,56 @@ pub fn bar(ui: &mut egui::Ui, state: &AppState, palette: &Palette, bind: std::ne
     }
 }
 
-/// What is stored, and a button to drop it.
+/// What is stored, and controls to reveal or drop it.
 ///
-/// Disabled when there is nothing to drop, so the button doubles as the answer
-/// to whether anything is stored. No confirmation: every byte is re-computable
-/// from audio that still exists, so a misclick costs one separation.
+/// The empty button is disabled when there is nothing to drop, so it doubles as
+/// the answer to whether anything is stored. No confirmation: every byte is
+/// re-computable from audio that still exists, so a misclick costs one
+/// separation.
 fn cache_controls(ui: &mut egui::Ui, state: &AppState, palette: &Palette) {
     let stats = state.cache.stats();
+    let residue = state.cache.residue();
     // Not "Clear": the log section has one of those, and two buttons reading
     // "Clear" in one window is a coin toss about which one you are about to
     // press. This one names what it empties.
+    //
+    // Enabled for leftover folders too, not just loaded entries: a folder without
+    // a detail file is not served, but it is still on disk and this is the only
+    // control that removes it.
+    let hover = if residue > 0 {
+        format!("Delete every separated stem, including {residue} folder(s) with no detail file.")
+    } else {
+        "Delete every separated stem. Tracks separate again on the next request.".to_owned()
+    };
     if ui
         .add_enabled(
-            stats.tracks > 0,
+            stats.tracks > 0 || residue > 0,
             egui::Button::new(egui::RichText::new("Empty cache").size(TEXT)),
         )
-        .on_hover_text("Delete every separated stem. Tracks separate again on the next request.")
+        .on_hover_text(hover)
         .clicked()
     {
         let (tracks, freed) = state.cache.clear();
         tracing::info!("cache reset: {tracks} tracks, {:.0} MB", freed as f64 / 1e6);
     }
+
+    // A folder rather than a word: the bar shares its width with the cache
+    // stats and, during a separation, the progress. The hit target is bigger
+    // than the drawing, and the tooltip says what it opens.
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+    let colour = if response.hovered() {
+        palette.text
+    } else {
+        palette.muted
+    };
+    folder(ui, rect.shrink(4.0), colour);
+    let response = response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Show the stem cache in Finder");
+    if response.clicked() {
+        reveal::show(state.cache.root());
+    }
+
     ui.label(
         egui::RichText::new(format!(
             "{} cached · {:.0} MB",
@@ -125,6 +155,32 @@ fn cache_controls(ui: &mut egui::Ui, state: &AppState, palette: &Palette) {
         ))
         .size(TEXT)
         .color(palette.muted),
+    );
+}
+
+/// A folder, painted for the same reason the chevron is: egui's bundled fonts
+/// have no folder glyph, and a missing glyph draws nothing at all.
+fn folder(ui: &egui::Ui, rect: egui::Rect, colour: Color32) {
+    let painter = ui.painter();
+    let height = rect.height();
+    let width = rect.width();
+
+    // The tab sits behind the body and is filled; the body is an outline.
+    let tab = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.left() + width * 0.45, rect.top() + height * 0.30),
+    );
+    painter.rect_filled(tab, 1.5, colour.gamma_multiply(0.35));
+
+    let body = egui::Rect::from_min_max(
+        egui::pos2(rect.left(), rect.top() + height * 0.22),
+        rect.max,
+    );
+    painter.rect_stroke(
+        body,
+        2.0,
+        egui::Stroke::new(1.2, colour),
+        egui::StrokeKind::Inside,
     );
 }
 

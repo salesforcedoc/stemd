@@ -27,7 +27,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Router, body::Bytes};
 use serde::{Deserialize, Serialize};
-use stemd_core::{Audio, DspMode, OutputRate, PcmFormat, Stage, resample};
+use stemd_core::{Audio, DspMode, OutputRate, PcmFormat, Stage, StemFormat, resample};
 use tokio_util::io::ReaderStream;
 
 use crate::cache::{Cache, Ingredients, Output};
@@ -56,17 +56,47 @@ pub struct AppState {
     /// Present unless --no-mdns. Shared so every exit path can withdraw the
     /// advertisement rather than relying on Drop, which macOS skips on Cmd-Q.
     pub advertiser: Option<Arc<Advertiser>>,
+    /// Present with --prolink. The window reads its decks and downloaded tracks
+    /// from here; the monitor itself holds no `AppState`.
+    pub prolink: Option<Arc<crate::prolink::ProLink>>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/jobs", post(create_job))
+        .route("/v1/jobs/lookup", get(lookup_job))
         .route("/v1/jobs/{id}", get(get_job))
         .route("/v1/jobs/{id}", delete(delete_job))
         .route("/v1/jobs/{id}/stems/{name}", get(get_stem))
         .route("/v1/logs", get(get_logs))
+        .layer(axum::middleware::from_fn(log_failed_request))
         .with_state(state)
+}
+
+/// Make a rejected upload visible in `/v1/logs`.
+///
+/// The handler's own errors are logged with their message in [`ApiError`], but
+/// axum's extractor and body-limit rejections never reach it: without this a
+/// client that is told "no" leaves no trace on the server at all.
+async fn log_failed_request(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("?")
+        .to_owned();
+    let response = next.run(request).await;
+    let status = response.status();
+    if !status.is_success() {
+        tracing::warn!("API {method} {uri} ({length} bytes): {status}");
+    }
+    response
 }
 
 #[derive(Debug, Serialize)]
@@ -193,10 +223,59 @@ struct CreateParams {
     /// default, converts any pair. See `dsp_modes` in `/v1/health`.
     #[serde(default)]
     dsp_mode: Option<String>,
+    /// Optional song details, written to the cache index beside the stems.
+    /// They never affect the separation or the cache key.
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    album: Option<String>,
+    /// The client-computed identity of the source file. An alias for cache
+    /// lookup, never part of the key: a client that can hash its file sends
+    /// this to `GET /v1/jobs/lookup` first and only uploads on a miss.
+    #[serde(default)]
+    source_hash: Option<String>,
 }
 
 const fn default_rate() -> u32 {
     44100
+}
+
+/// What `GET /v1/jobs/lookup` can ask for.
+///
+/// Every field the content key distinguishes has to be here too: a hit is
+/// served instead of a POST, so it must describe the same separation that POST
+/// would have produced. Omitted fields take the same defaults a POST does.
+#[derive(Debug, Deserialize)]
+struct LookupParams {
+    source_hash: String,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    output_sample_rate: Option<String>,
+    #[serde(default)]
+    dsp_mode: Option<String>,
+    #[serde(default)]
+    include_derived: Option<bool>,
+}
+
+/// Clean a client-supplied source identity.
+///
+/// The deck's sidecar sends 16 lowercase hex characters (FNV over the file's
+/// size and its first and last 64 KiB), but the server only needs a short
+/// opaque token: it is compared against what was stored and never becomes a
+/// path. A value that cannot be one is dropped rather than trusted, which turns
+/// a malformed preflight into an ordinary upload instead of a failed one.
+fn normalise_source_hash(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty()
+        || value.len() > 64
+        || !value.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(value.to_ascii_lowercase())
 }
 
 const fn default_channels() -> usize {
@@ -231,7 +310,7 @@ fn check_dsp_mode(dsp: DspMode, model_rate: u32, out_rate: OutputRate) -> Result
 }
 
 /// A submission whose query string has been parsed and checked against the body.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Submission {
     in_format: PcmFormat,
     output: Output,
@@ -241,6 +320,12 @@ struct Submission {
     /// Rate the model runs at, read once here so the whole request works from
     /// one answer even if the window switches models underneath it.
     model_rate: u32,
+    /// What the client said about the track, for the cache detail file.
+    details: crate::details::TrackDetails,
+    /// The model identity the key was hashed with, kept for the detail file.
+    model: String,
+    /// The client's identity for the source file, when it sent one.
+    source_hash: Option<String>,
 }
 
 impl Submission {
@@ -346,6 +431,19 @@ impl Submission {
             channels: params.channels,
             sample_rate: params.sample_rate,
             model_rate,
+            details: {
+                let mut details = crate::details::TrackDetails {
+                    title: params.title.clone(),
+                    artist: params.artist.clone(),
+                    album: params.album.clone(),
+                    source: Some("http".into()),
+                    ..Default::default()
+                };
+                details.clip();
+                details
+            },
+            model: state.switcher.identity(),
+            source_hash: normalise_source_hash(params.source_hash.as_deref()),
         })
     }
 
@@ -448,7 +546,7 @@ async fn create_job(
     body: Bytes,
 ) -> Result<Response, ApiError> {
     let submission = Submission::parse(&params, &body, &state)?;
-    let (key, body) = hash_upload(body, submission, state.switcher.identity()).await?;
+    let (key, body) = hash_upload(body, submission.clone(), submission.model.clone()).await?;
 
     // Claim the key before the decode, not after: `claim` registers the job
     // under the same lock that looks for one, so simultaneous requests for the
@@ -473,13 +571,101 @@ async fn create_job(
             crate::cache::short(&key),
             entry.separation_secs
         );
+        // The file behind this entry has now been seen by a client that knows
+        // how to name it. Recording that is what turns the NEXT load into a
+        // lookup hit; entries separated before the preflight existed have no
+        // identity until this happens.
+        if let Some(source_hash) = submission.source_hash.as_deref() {
+            state.cache.tag_source(&entry, source_hash);
+        }
         job.complete(entry, true);
         return Ok((StatusCode::OK, Json(job.view())).into_response());
     }
 
-    let mix = decode_upload(body, submission, &job).await?;
+    let mix = decode_upload(body, submission.clone(), &job).await?;
     enqueue(&state, &job, mix, submission)?;
     Ok((StatusCode::ACCEPTED, Json(job.view())).into_response())
+}
+
+/// Answer "have you already separated this file?" without receiving it.
+///
+/// The deck's sidecar hashes the source file before it streams a byte, so a
+/// track the server has seen before costs one small GET instead of a decode and
+/// a hundred megabytes across the link. The identity is an alias the client
+/// chose, not the content key: the key cannot be computed without the body,
+/// which is the whole thing this avoids.
+///
+/// A hit is registered as a completed job and answered exactly like a cache-hit
+/// POST, because the sidecar then polls it and GETs its stems the same way.
+/// `202`/`200` are not distinguished here — a lookup either has the stems or it
+/// has nothing.
+async fn lookup_job(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<LookupParams>,
+) -> Result<Response, ApiError> {
+    let source_hash = normalise_source_hash(Some(params.source_hash.as_str()))
+        .ok_or_else(|| ApiError::bad_request("source_hash must be 1-64 alphanumeric characters"))?;
+
+    // Read once, like `Submission::parse`: the window can change these between
+    // two requests, and a lookup that mixes two instants can answer with an
+    // entry no POST would have produced.
+    let defaults = state.settings.get();
+    let format: StemFormat = match params.format.as_deref() {
+        Some(s) => s
+            .parse()
+            .map_err(|e| ApiError::bad_request(format!("{e}")))?,
+        None => defaults.format,
+    };
+    let rate: OutputRate = match params.output_sample_rate.as_deref() {
+        Some(s) => s
+            .parse()
+            .map_err(|e| ApiError::bad_request(format!("{e}")))?,
+        None => defaults.rate,
+    };
+    let dsp: DspMode = match params.dsp_mode.as_deref() {
+        Some(s) => s
+            .parse()
+            .map_err(|e| ApiError::bad_request(format!("{e}")))?,
+        None => DspMode::default(),
+    };
+    let derived = params.include_derived.unwrap_or(false);
+    check_dsp_mode(dsp, state.queue.info().sample_rate, rate).map_err(ApiError::bad_request)?;
+    if !format.carries(rate) {
+        return Err(ApiError::bad_request(format!(
+            "{format} has no {} Hz mode",
+            rate.hz()
+        )));
+    }
+
+    let entry = state
+        .cache
+        .find_source(
+            &source_hash,
+            format,
+            rate.hz(),
+            dsp,
+            derived,
+            &state.switcher.identity(),
+        )
+        .ok_or_else(ApiError::not_found)?;
+
+    let job = match state.store.claim(&entry.key) {
+        // Another client is already separating this exact result. Its owner is
+        // waiting for it, so join rather than complete it from an older entry.
+        Err(existing) => existing,
+        Ok(job) => {
+            job.complete(Arc::clone(&entry), true);
+            job
+        }
+    };
+    tracing::debug!(
+        job = %job.id,
+        "lookup {} hit {} (separated in {:.2}s)",
+        source_hash,
+        crate::cache::short(&entry.key),
+        entry.separation_secs
+    );
+    Ok(Json(live_view(&state, &job)).into_response())
 }
 
 /// Hand the decoded mix to the worker, failing the job if the queue is full.
@@ -496,6 +682,11 @@ fn enqueue(
             job: Arc::clone(job),
             mix,
             output: submission.output,
+            provenance: crate::cache::Provenance {
+                details: submission.details,
+                model: submission.model,
+                source_hash: submission.source_hash,
+            },
         })
         .map_err(|full| {
             job.fail(format!("{full}"));
@@ -584,7 +775,7 @@ async fn get_stem(
 
     // Only once the bytes are provably readable. Marking on request would let a
     // failed fetch count as consumption and keep an entry nobody can use.
-    entry.mark_fetched(&name);
+    state.cache.mark_fetched(&entry, &name);
 
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, entry.format.content_type())
@@ -639,6 +830,9 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // The middleware logs the status and URI; this adds the reason the
+        // handler gave, which is the part that says what to fix.
+        tracing::debug!("API {}: {}", self.status, self.message);
         (
             self.status,
             Json(serde_json::json!({"error": self.message})),
@@ -660,6 +854,10 @@ mod tests {
             output_sample_rate: None,
             include_derived: None,
             dsp_mode: None,
+            title: None,
+            artist: None,
+            album: None,
+            source_hash: None,
         }
     }
 

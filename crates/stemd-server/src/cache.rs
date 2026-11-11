@@ -10,18 +10,30 @@
 //!    `unfetched_ttl` goes.
 //! 2. Over the cap, least-recently-used, until it fits.
 //!
-//! The entry directory holds the stems; a job only borrows it.
+//! The entry directory holds the stems and a `detail.json`; the root holds an
+//! `index.json` listing every entry. Both survive restarts, so the cache can be
+//! scanned and reused without separating again. A job only borrows an entry.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use stemd_core::{Audio, DERIVED, DspMode, OutputRate, PcmFormat, StemFormat, Stems, resample};
+
+use crate::details::TrackDetails;
+
+/// The file every entry carries, and the file beside the entries that lists
+/// them. Both are plain JSON so the cache can be read without the server.
+const DETAIL_FILE: &str = "detail.json";
+const INDEX_FILE: &str = "index.json";
+const INDEX_VERSION: u32 = 1;
 
 /// Invalidates every stored entry when bumped by hand. Covers a change to which
 /// stems ship, or to how one is encoded or scaled on the way out. The model is in
@@ -48,6 +60,19 @@ impl Output {
     pub const fn parts(self) -> usize {
         stemd_core::SHIPPED.len() + if self.derived { 1 } else { 0 }
     }
+}
+
+/// Where a separation came from, recorded beside the stems.
+#[derive(Clone, Debug)]
+pub struct Provenance {
+    pub details: TrackDetails,
+    /// The model identity the key was hashed with.
+    pub model: String,
+    /// The client's identity for the source file, when it sent one. Not part of
+    /// the key: it is an alias, stored so a client can ask about a file before
+    /// uploading it. `None` for a drop or an older client, which still match by
+    /// key.
+    pub source_hash: Option<String>,
 }
 
 /// Everything that decides what a separation returns.
@@ -128,11 +153,66 @@ pub struct CachedStem {
     pub gain: f32,
 }
 
+/// A stem as it appears in `detail.json`: the file is named relative to the
+/// entry directory, so a copied folder stays self-describing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StemDetail {
+    pub name: String,
+    pub file: String,
+    pub bytes: u64,
+    pub gain: f32,
+}
+
+/// Everything written to `detail.json`, and the entry form used by
+/// `index.json`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EntryDetail {
+    pub key: String,
+    pub folder: PathBuf,
+    pub created_unix: u64,
+    pub last_used_unix: u64,
+    pub fetched: bool,
+    #[serde(default)]
+    pub unfetched: Vec<String>,
+    /// Rate of the stem files.
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub frames: usize,
+    pub duration_secs: f64,
+    /// Container the stems are encoded in.
+    pub format: String,
+    pub derived: bool,
+    pub dsp: String,
+    pub model: String,
+    pub model_residual_db: f64,
+    pub separation_secs: f64,
+    pub bytes: u64,
+    pub stems: Vec<StemDetail>,
+    /// The client-computed identity of the source file, when one was sent.
+    /// Clients that can hash a file before uploading use it to skip the upload;
+    /// it is an alias, never part of the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    /// Song details, flattened so a reader sees title/artist at the top level.
+    #[serde(flatten)]
+    pub track: TrackDetails,
+}
+
+/// The top-level scan file.
+#[derive(Debug, Serialize, Deserialize)]
+struct CacheIndex {
+    version: u32,
+    generated_unix: u64,
+    entries: Vec<EntryDetail>,
+}
+
 #[derive(Debug)]
 struct State {
     /// Stems no client has pulled yet. Empty means the entry did its job.
     unfetched: HashSet<String>,
     last_used: Instant,
+    /// Wall-clock form of `last_used`, for the detail file.
+    last_used_unix: u64,
 }
 
 /// One separation's output, owned by the cache and borrowed by jobs.
@@ -150,6 +230,20 @@ pub struct Entry {
     /// a client can tell a cheap answer from an expensive one.
     pub separation_secs: f64,
     pub bytes: u64,
+    /// Whether the derived part is one of the stems.
+    pub derived: bool,
+    /// The DSP mode the output conversion ran through.
+    pub dsp: DspMode,
+    /// The model identity the entry was made with.
+    pub model: String,
+    /// When the entry was first written, for scanning.
+    pub created_unix: u64,
+    /// What is known about the source. Immutable after publish.
+    pub details: TrackDetails,
+    /// The client's identity for the source file, when it sent one. Interior
+    /// mutability because an entry that predates the preflight can be tagged
+    /// when its owner POSTs the file again, and the next load then hits.
+    source_hash: Mutex<Option<String>>,
     /// Set when the cache deletes this entry's directory, so a job holding the
     /// last reference can tell that its stems are gone.
     evicted: AtomicBool,
@@ -170,7 +264,9 @@ impl Entry {
     }
 
     pub fn touch(&self) {
-        self.state.lock().last_used = Instant::now();
+        let mut state = self.state.lock();
+        state.last_used = Instant::now();
+        state.last_used_unix = unix_now();
     }
 
     pub fn evicted(&self) -> bool {
@@ -185,6 +281,7 @@ impl Entry {
         let mut state = self.state.lock();
         state.unfetched.remove(name);
         state.last_used = Instant::now();
+        state.last_used_unix = unix_now();
     }
 
     pub fn stem(&self, name: &str) -> Option<&CachedStem> {
@@ -210,6 +307,48 @@ impl Entry {
             self.duration_secs() / self.separation_secs
         } else {
             f64::INFINITY
+        }
+    }
+
+    /// The serialisable form written to `detail.json` and `index.json`.
+    fn detail(&self) -> EntryDetail {
+        let state = self.state.lock();
+        let mut unfetched: Vec<String> = state.unfetched.iter().cloned().collect();
+        unfetched.sort();
+        EntryDetail {
+            key: self.key.clone(),
+            folder: self.dir.clone(),
+            created_unix: self.created_unix,
+            last_used_unix: state.last_used_unix,
+            fetched: unfetched.is_empty(),
+            unfetched,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            frames: self.frames,
+            duration_secs: self.duration_secs(),
+            format: self.format.to_string(),
+            derived: self.derived,
+            dsp: self.dsp.to_string(),
+            model: self.model.clone(),
+            model_residual_db: self.model_residual_db,
+            separation_secs: self.separation_secs,
+            bytes: self.bytes,
+            stems: self
+                .stems
+                .iter()
+                .map(|stem| StemDetail {
+                    name: stem.name.clone(),
+                    file: stem
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    bytes: stem.bytes,
+                    gain: stem.gain,
+                })
+                .collect(),
+            track: self.details.clone(),
+            source_hash: self.source_hash.lock().clone(),
         }
     }
 }
@@ -243,6 +382,12 @@ pub struct Cache {
     /// Makes staging directory names unique. The worker is serialised today, so
     /// two publishes cannot overlap, this keeps that from being load-bearing.
     seq: AtomicU64,
+    /// Serialises index rewrites so an older snapshot cannot replace a newer one.
+    persist: Mutex<()>,
+    /// Key-shaped folders that could not be loaded (no detail file, or an
+    /// interrupted write). They are not served, but Empty cache must be able to
+    /// remove them, so they count as something to clear.
+    residue: AtomicUsize,
 }
 
 /// Where entries live when no directory is configured.
@@ -254,7 +399,7 @@ pub struct Cache {
 /// ```
 ///
 /// The cache root, not the data root: every byte here is derived. Model artefacts
-/// live under [`crate::models::support_dir`], outside the startup clear below.
+/// live under [`crate::models::support_dir`].
 ///
 /// Windows takes an extra component: `FOLDERID_LocalAppData` is what both
 /// `dirs::cache_dir` and `dirs::data_local_dir` return there.
@@ -270,22 +415,82 @@ pub fn default_dir() -> Result<PathBuf> {
 }
 
 impl Cache {
-    /// Prepare `root`, discarding whatever a previous run left behind.
+    /// Open `root`, keeping what a previous run wrote.
     ///
-    /// Whether an entry was ever pulled is not recorded on disk and rule 1 turns on
-    /// it, so start empty. Also disposes of any `.part` directory left by a kill
-    /// mid-write. The contents go, not the directory: `root` defaults to the whole
-    /// cache directory.
+    /// An entry is loaded only if its `detail.json` is readable and every stem
+    /// it names is still there. Folders that predate the detail file, or whose
+    /// write was interrupted, are left alone and reported: the cache is
+    /// disposable, but deleting someone's stems on startup is not this
+    /// function's call. A staging directory from a kill mid-write is removed.
     pub fn new(root: PathBuf, max_bytes: u64, unfetched_ttl: Duration) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
-        clear_contents(&root).with_context(|| format!("clearing {}", root.display()))?;
-        Ok(Arc::new(Self {
+        remove_staging(&root).with_context(|| format!("cleaning {}", root.display()))?;
+
+        let mut entries = HashMap::new();
+        let mut ignored = 0usize;
+        for item in
+            std::fs::read_dir(&root).with_context(|| format!("reading {}", root.display()))?
+        {
+            let path = item?.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(key) = path.file_name().and_then(OsStr::to_str) else {
+                continue;
+            };
+            if !is_key(key) {
+                continue;
+            }
+            match load_entry(&path, key) {
+                Ok(Some(entry)) => {
+                    entries.insert(key.to_owned(), Arc::new(entry));
+                }
+                Ok(None) => ignored += 1,
+                Err(err) => {
+                    tracing::warn!("ignoring cache entry {}: {err:#}", path.display());
+                    ignored += 1;
+                }
+            }
+        }
+        if ignored > 0 {
+            tracing::warn!(
+                "{ignored} cache folder(s) have no readable {DETAIL_FILE} and were not \
+                 loaded; use the window's Empty cache button to remove them"
+            );
+        }
+
+        let cache = Arc::new(Self {
             root,
-            entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(entries),
             max_bytes,
             unfetched_ttl,
             seq: AtomicU64::new(0),
-        }))
+            persist: Mutex::new(()),
+            residue: AtomicUsize::new(ignored),
+        });
+        {
+            let mut entries = cache.entries.lock();
+            let (rotated, freed) = cache.enforce_cap(&mut entries);
+            if rotated > 0 {
+                tracing::info!(
+                    "cache over budget at startup, rotated {rotated} entries ({:.0} MB)",
+                    freed as f64 / 1e6
+                );
+            }
+        }
+        cache.write_index();
+        Ok(cache)
+    }
+
+    /// Where the stem files live, for the window's "open cache" control.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Key-shaped folders that were not loaded, so the window can still offer to
+    /// clear them.
+    pub fn residue(&self) -> usize {
+        self.residue.load(Ordering::Relaxed)
     }
 
     /// Fetch an entry, marking it as used. `None` on a miss.
@@ -309,19 +514,89 @@ impl Cache {
                 "{} is in the index but not on disk; separating it again",
                 short(&entry.key)
             );
-            let mut entries = self.entries.lock();
-            // Only if it is still the one that went missing: a publish may have
-            // replaced it under this key in the meantime.
-            if entries
-                .get(key)
-                .is_some_and(|held| Arc::ptr_eq(held, &entry))
             {
-                entries.remove(key);
-                entry.evicted.store(true, Ordering::SeqCst);
+                let mut entries = self.entries.lock();
+                // Only if it is still the one that went missing: a publish may have
+                // replaced it under this key in the meantime.
+                if entries
+                    .get(key)
+                    .is_some_and(|held| Arc::ptr_eq(held, &entry))
+                {
+                    entries.remove(key);
+                    entry.evicted.store(true, Ordering::SeqCst);
+                }
             }
+            self.write_index();
             return None;
         }
         Some(entry)
+    }
+
+    /// Find an entry by the client's identity for the source file.
+    ///
+    /// The identity is an alias, not a key: it says "this is the same recording",
+    /// but not what was asked for. Everything the content key would have
+    /// distinguished has to be matched here too, or a lookup could hand back
+    /// audio at a rate or in a container the caller never asked for. `model`
+    /// stays in the comparison for the same reason it stays in the key.
+    ///
+    /// Newest wins when several entries share a source, which is what a client
+    /// that changed format and then changed back should get.
+    pub fn find_source(
+        &self,
+        source_hash: &str,
+        format: StemFormat,
+        rate: u32,
+        dsp: DspMode,
+        derived: bool,
+        model: &str,
+    ) -> Option<Arc<Entry>> {
+        if source_hash.is_empty() {
+            return None;
+        }
+        let entries = self.entries.lock();
+        entries
+            .values()
+            .filter(|entry| {
+                entry.format == format
+                    && entry.sample_rate == rate
+                    && entry.dsp == dsp
+                    && entry.derived == derived
+                    && entry.model == model
+                    && entry.present()
+            })
+            .filter(|entry| entry.source_hash.lock().as_deref() == Some(source_hash))
+            .max_by_key(|entry| entry.created_unix)
+            .cloned()
+    }
+
+    /// Record the client's identity on an entry that predates the preflight.
+    ///
+    /// Only ever fills an empty slot: the file behind an entry cannot change, so
+    /// a second, different identity for the same entry is a client bug. The first
+    /// one stands. Persisted immediately because the whole point is to survive the
+    /// restart that would otherwise forget it.
+    pub fn tag_source(&self, entry: &Arc<Entry>, source_hash: &str) {
+        let tagged = {
+            let mut held = entry.source_hash.lock();
+            if held.is_some() {
+                false
+            } else {
+                *held = Some(source_hash.to_owned());
+                true
+            }
+        };
+        if !tagged {
+            return;
+        }
+        if let Err(err) = self.save_detail(entry) {
+            tracing::warn!(
+                "could not record the source identity on {}: {err:#}",
+                short(&entry.key)
+            );
+            return;
+        }
+        self.write_index();
     }
 
     /// Delete every entry and its stems. Returns the tracks and bytes freed.
@@ -329,14 +604,64 @@ impl Cache {
     /// A download already reading its file finishes from the open descriptor; one
     /// that has not opened yet gets a 410.
     pub fn clear(&self) -> (usize, u64) {
-        let mut entries = self.entries.lock();
-        let tracks = entries.len();
-        let freed = entries.values().map(|entry| entry.bytes).sum();
-        for entry in entries.values() {
-            self.delete(entry);
+        let (tracks, freed) = {
+            let mut entries = self.entries.lock();
+            let tracks = entries.len();
+            let freed = entries.values().map(|entry| entry.bytes).sum();
+            for entry in entries.values() {
+                self.delete(entry);
+            }
+            entries.clear();
+            (tracks, freed)
+        };
+        // Anything else in the root is either an index this run will rewrite or a
+        // folder a previous version left without a detail file.
+        if let Err(err) = clear_contents(&self.root) {
+            tracing::warn!("could not empty {}: {err}", self.root.display());
         }
-        entries.clear();
+        self.residue.store(0, Ordering::Relaxed);
+        self.write_index();
         (tracks, freed)
+    }
+
+    /// Record that a client pulled `name`, and persist the change.
+    pub fn mark_fetched(&self, entry: &Entry, name: &str) {
+        entry.mark_fetched(name);
+        if let Err(err) = self.save_detail(entry) {
+            tracing::warn!("could not update {}: {err:#}", entry.dir.display());
+        }
+        self.write_index();
+    }
+
+    fn save_detail(&self, entry: &Entry) -> Result<()> {
+        write_json_atomic(&entry.dir.join(DETAIL_FILE), &entry.detail())
+    }
+
+    /// Rewrite the scan file. Best effort: a failed index does not cost a stem.
+    fn write_index(&self) {
+        if let Err(err) = self.try_write_index() {
+            tracing::warn!(
+                "could not write {}: {err:#}",
+                self.root.join(INDEX_FILE).display()
+            );
+        }
+    }
+
+    fn try_write_index(&self) -> Result<()> {
+        let _persist = self.persist.lock();
+        let mut entries: Vec<EntryDetail> = {
+            let entries = self.entries.lock();
+            entries.values().map(|entry| entry.detail()).collect()
+        };
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.created_unix));
+        write_json_atomic(
+            &self.root.join(INDEX_FILE),
+            &CacheIndex {
+                version: INDEX_VERSION,
+                generated_unix: unix_now(),
+                entries,
+            },
+        )
     }
 
     /// One consistent snapshot, rather than three locks that can disagree.
@@ -365,6 +690,7 @@ impl Cache {
         stems: &Stems,
         output: Output,
         separation_secs: f64,
+        provenance: Provenance,
     ) -> Result<Arc<Entry>> {
         // Converted before encoding, so an entry holds exactly the bytes a
         // client is handed and a hit costs no further work.
@@ -373,13 +699,13 @@ impl Cache {
         let dir = self.root.join(key);
         let staging = self.staging_dir(key)?;
         let files = write_stems(&staging, &dir, &shipped, output.format)?;
-        install(&staging, &dir)?;
 
+        let created_unix = unix_now();
         let entry = Arc::new(Entry {
             key: key.to_owned(),
             bytes: files.iter().map(|f| f.bytes).sum(),
             stems: files,
-            dir,
+            dir: dir.clone(),
             // The geometry a client receives: the stems' after conversion,
             // not the mix's that produced them.
             sample_rate: output.rate.hz(),
@@ -388,24 +714,39 @@ impl Cache {
             format: output.format,
             model_residual_db: stems.model_residual_db,
             separation_secs,
+            derived: output.derived,
+            dsp: output.dsp,
+            model: provenance.model,
+            created_unix,
+            details: provenance.details,
+            source_hash: Mutex::new(provenance.source_hash),
             evicted: AtomicBool::new(false),
             state: Mutex::new(State {
                 unfetched: shipped.iter().map(|(name, _)| (*name).to_owned()).collect(),
                 last_used: Instant::now(),
+                last_used_unix: created_unix,
             }),
         });
 
-        let mut entries = self.entries.lock();
-        entries.insert(key.to_owned(), Arc::clone(&entry));
-        // Apply the cap now rather than waiting for the sweep: a burst of long
-        // tracks would otherwise sit over budget for a whole interval.
-        let (rotated, freed) = self.enforce_cap(&mut entries);
-        if rotated > 0 {
-            tracing::info!(
-                "cache over budget, rotated {rotated} entries ({:.0} MB)",
-                freed as f64 / 1e6
-            );
+        // Written into the staging directory so a kill between the stems and the
+        // detail cannot publish an entry that cannot be loaded again.
+        write_json_atomic(&staging.join(DETAIL_FILE), &entry.detail())?;
+        install(&staging, &dir)?;
+
+        {
+            let mut entries = self.entries.lock();
+            entries.insert(key.to_owned(), Arc::clone(&entry));
+            // Apply the cap now rather than waiting for the sweep: a burst of long
+            // tracks would otherwise sit over budget for a whole interval.
+            let (rotated, freed) = self.enforce_cap(&mut entries);
+            if rotated > 0 {
+                tracing::info!(
+                    "cache over budget, rotated {rotated} entries ({:.0} MB)",
+                    freed as f64 / 1e6
+                );
+            }
         }
+        self.write_index();
         Ok(entry)
     }
 
@@ -426,36 +767,42 @@ impl Cache {
     /// Apply both rules. Returns what it collected. Nothing is deleted while the
     /// store fits.
     pub fn reap(&self) -> Reaped {
-        let mut entries = self.entries.lock();
-        let now = Instant::now();
-        let mut reaped = Reaped::default();
+        let reaped = {
+            let mut entries = self.entries.lock();
+            let now = Instant::now();
+            let mut reaped = Reaped::default();
 
-        // Rule 1: space is starting to matter, so give up the separations nobody
-        // came back for before rule 2 has to touch any that were wanted.
-        if self.under_pressure(&entries) {
-            entries.retain(|_, entry| {
-                let idle = now.duration_since(entry.last_used());
-                if entry.consumed() || idle <= self.unfetched_ttl {
-                    return true;
-                }
-                tracing::debug!(
-                    "reaping {} ({:.0} MB): separated {:.0}s ago, never pulled, \
-                     and the store is filling up",
-                    short(&entry.key),
-                    entry.bytes as f64 / 1e6,
-                    idle.as_secs_f64()
-                );
-                reaped.unfetched += 1;
-                reaped.bytes += entry.bytes;
-                self.delete(entry);
-                false
-            });
+            // Rule 1: space is starting to matter, so give up the separations nobody
+            // came back for before rule 2 has to touch any that were wanted.
+            if self.under_pressure(&entries) {
+                entries.retain(|_, entry| {
+                    let idle = now.duration_since(entry.last_used());
+                    if entry.consumed() || idle <= self.unfetched_ttl {
+                        return true;
+                    }
+                    tracing::debug!(
+                        "reaping {} ({:.0} MB): separated {:.0}s ago, never pulled, \
+                         and the store is filling up",
+                        short(&entry.key),
+                        entry.bytes as f64 / 1e6,
+                        idle.as_secs_f64()
+                    );
+                    reaped.unfetched += 1;
+                    reaped.bytes += entry.bytes;
+                    self.delete(entry);
+                    false
+                });
+            }
+
+            // Rule 2: still over budget.
+            let (rotated, freed) = self.enforce_cap(&mut entries);
+            reaped.rotated = rotated;
+            reaped.bytes += freed;
+            reaped
+        };
+        if reaped.any() {
+            self.write_index();
         }
-
-        // Rule 2: still over budget.
-        let (rotated, freed) = self.enforce_cap(&mut entries);
-        reaped.rotated = rotated;
-        reaped.bytes += freed;
         reaped
     }
 
@@ -515,6 +862,146 @@ impl Cache {
 }
 
 /// Delete everything inside `dir`, leaving the directory itself in place.
+/// Rebuild one entry from its `detail.json`.
+///
+/// `Ok(None)` means the folder is not a complete entry, which is not an error:
+/// it is what an interrupted write or a folder from before detail files looked
+/// like. A malformed detail is an error so the caller can name the folder.
+fn load_entry(dir: &Path, key: &str) -> Result<Option<Entry>> {
+    let path = dir.join(DETAIL_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let detail: EntryDetail =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display()))?;
+    if detail.key != key {
+        bail!("its detail names {}, not {key}", detail.key);
+    }
+
+    let format: StemFormat = detail
+        .format
+        .parse()
+        .with_context(|| format!("unknown stem format {:?}", detail.format))?;
+    let dsp: DspMode = detail
+        .dsp
+        .parse()
+        .with_context(|| format!("unknown DSP mode {:?}", detail.dsp))?;
+
+    let mut stems = Vec::with_capacity(detail.stems.len());
+    for stem in &detail.stems {
+        if stem.file.is_empty() || stem.file.contains('/') || stem.file.contains('\\') {
+            bail!("bad stem file name {:?}", stem.file);
+        }
+        let path = dir.join(&stem.file);
+        let bytes = match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => metadata.len(),
+            _ => return Ok(None),
+        };
+        stems.push(CachedStem {
+            name: stem.name.clone(),
+            path,
+            bytes,
+            gain: stem.gain,
+        });
+    }
+    if stems.is_empty() {
+        return Ok(None);
+    }
+
+    let bytes = stems.iter().map(|stem| stem.bytes).sum();
+    let now = unix_now();
+    let last_used_unix = detail.last_used_unix.max(detail.created_unix).min(now);
+    let age = now.saturating_sub(last_used_unix);
+    let last_used = Instant::now()
+        .checked_sub(Duration::from_secs(age))
+        .unwrap_or_else(Instant::now);
+    let unfetched: HashSet<String> = if detail.unfetched.is_empty() {
+        if detail.fetched {
+            HashSet::new()
+        } else {
+            detail.stems.iter().map(|stem| stem.name.clone()).collect()
+        }
+    } else {
+        detail.unfetched.iter().cloned().collect()
+    };
+
+    Ok(Some(Entry {
+        key: key.to_owned(),
+        dir: dir.to_path_buf(),
+        stems,
+        sample_rate: detail.sample_rate,
+        channels: detail.channels,
+        frames: detail.frames,
+        format,
+        model_residual_db: detail.model_residual_db,
+        separation_secs: detail.separation_secs,
+        bytes,
+        derived: detail.derived,
+        dsp,
+        model: detail.model,
+        created_unix: detail.created_unix,
+        details: detail.track,
+        source_hash: Mutex::new(detail.source_hash),
+        evicted: AtomicBool::new(false),
+        state: Mutex::new(State {
+            unfetched,
+            last_used,
+            last_used_unix,
+        }),
+    }))
+}
+
+/// Remove staging directories and index temporaries a kill left behind.
+fn remove_staging(dir: &Path) -> std::io::Result<()> {
+    for item in std::fs::read_dir(dir)? {
+        let path = item?.path();
+        let extension = path.extension().and_then(OsStr::to_str);
+        if path.is_dir() && extension == Some("part") {
+            std::fs::remove_dir_all(&path)?;
+        } else if path.is_file() && extension == Some("tmp") {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// A cache key is a lower-case SHA-256 hex string, and a folder name is used as
+/// a path component, so anything else is not one of ours.
+fn is_key(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Write JSON through a temporary beside the target, then rename.
+///
+/// A reader must never see half an index, and a kill mid-write must not leave a
+/// file that parses as a shorter one.
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).context("encoding cache detail")?;
+    let name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("cache.json");
+    let temporary = path.with_file_name(format!("{name}.tmp"));
+    std::fs::write(&temporary, bytes)
+        .with_context(|| format!("writing {}", temporary.display()))?;
+    if let Err(err) = std::fs::rename(&temporary, path) {
+        // Windows will not replace an existing file with rename.
+        let _ = std::fs::remove_file(path);
+        std::fs::rename(&temporary, path)
+            .with_context(|| format!("replacing {} after {err}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn clear_contents(dir: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
@@ -774,6 +1261,11 @@ mod tests {
                     dsp: DspMode::default(),
                 },
                 1.0,
+                crate::cache::Provenance {
+                    details: crate::details::TrackDetails::default(),
+                    model: "test-model".into(),
+                    source_hash: None,
+                },
             )
             .expect_err("a stem of NaN must not publish");
 
@@ -1005,6 +1497,11 @@ mod tests {
                     &stems,
                     output(rate, false),
                     1.0,
+                    crate::cache::Provenance {
+                        details: crate::details::TrackDetails::default(),
+                        model: "test-model".into(),
+                        source_hash: None,
+                    },
                 )
                 .expect("publish");
 
@@ -1106,6 +1603,106 @@ mod tests {
                 "{rate} Hz must have its own entry"
             );
         }
+    }
+    #[test]
+    fn an_entry_and_its_song_details_survive_a_reopen() {
+        let key = "a".repeat(64);
+        let cache = cache(u64::MAX, Duration::from_secs(60));
+        let root = cache.root().to_path_buf();
+        let (mix, stems) = crate::testkit::stems(64);
+        let details = TrackDetails {
+            title: Some("Title".into()),
+            artist: Some("Artist".into()),
+            album: Some("Album".into()),
+            source: Some("prolink".into()),
+            local_file: Some(PathBuf::from("/tmp/track.mp3")),
+            medium_path: Some(PathBuf::from("/Contents/track.mp3")),
+            deck: Some(2),
+            slot: Some(3),
+            track_id: Some(42),
+        };
+        let entry = cache
+            .publish(
+                &key,
+                &mix,
+                &stems,
+                Output {
+                    format: StemFormat::Pcm16,
+                    rate: OutputRate::default(),
+                    derived: false,
+                    dsp: DspMode::default(),
+                },
+                1.0,
+                crate::cache::Provenance {
+                    details: details.clone(),
+                    model: "model-1".into(),
+                    source_hash: None,
+                },
+            )
+            .expect("publish");
+
+        let detail: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(&key).join(DETAIL_FILE)).expect("detail file"),
+        )
+        .expect("detail json");
+        assert_eq!(detail["title"], "Title");
+        assert_eq!(detail["artist"], "Artist");
+        assert_eq!(detail["track_id"], 42);
+        assert_eq!(detail["model"], "model-1");
+        assert_eq!(detail["derived"], false);
+
+        let index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join(INDEX_FILE)).expect("index file"))
+                .expect("index json");
+        assert_eq!(index["version"], INDEX_VERSION);
+        assert_eq!(index["entries"][0]["key"], key);
+
+        for stem in &entry.stems {
+            cache.mark_fetched(entry.as_ref(), &stem.name);
+        }
+        drop(entry);
+        drop(cache);
+
+        let reopened = Cache::new(root.clone(), u64::MAX, Duration::from_secs(60)).expect("reopen");
+        assert_eq!(reopened.stats().tracks, 1);
+        let loaded = reopened.get(&key).expect("the persisted entry");
+        assert_eq!(loaded.details.title.as_deref(), Some("Title"));
+        assert_eq!(loaded.details.artist.as_deref(), Some("Artist"));
+        assert_eq!(loaded.details.track_id, Some(42));
+        assert!(loaded.consumed(), "every stem had been fetched");
+
+        let (tracks, _) = reopened.clear();
+        assert_eq!(tracks, 1);
+        assert!(!root.join(&key).exists());
+        let index: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(INDEX_FILE)).expect("index after clear"),
+        )
+        .expect("index json");
+        assert_eq!(index["entries"].as_array().map(Vec::len), Some(0));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_folder_without_a_detail_file_is_left_for_the_user_to_clear() {
+        let cache = cache(u64::MAX, Duration::from_secs(60));
+        let root = cache.root().to_path_buf();
+        let key = "b".repeat(64);
+        std::fs::create_dir_all(root.join(&key)).expect("legacy folder");
+        std::fs::write(root.join(&key).join("harmonics.flac"), b"not a stem").expect("legacy stem");
+        drop(cache);
+
+        let reopened = Cache::new(root.clone(), u64::MAX, Duration::from_secs(60)).expect("reopen");
+        assert_eq!(reopened.stats().tracks, 0);
+        assert_eq!(reopened.residue(), 1);
+        assert!(
+            root.join(&key).is_dir(),
+            "a folder without a detail file is not deleted"
+        );
+
+        reopened.clear();
+        assert!(!root.join(&key).exists());
+        assert_eq!(reopened.residue(), 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
 

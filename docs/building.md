@@ -178,14 +178,19 @@ launch.
 | `--settings` | user data directory | |
 | `--overlap` | `0.25` | segment overlap fraction |
 | `--full-precision` | off | float32 model, 1.3x slower |
-| `--cache-dir` | user cache directory | emptied at every start |
+| `--cache-dir` | user cache directory | kept across launches; `index.json` lists entries |
 | `--cache-max-gb` | `4` | about 80 tracks as flac, 37 as pcm16 |
 | `--unfetched-ttl` | `300` | seconds |
-| `--max-track-minutes` | `10` | the only size limit, body cap derived |
+| `--max-track-minutes` | `90` | the only size limit; ~16 GB peak, body cap ~4.1 GB |
 | `--queue-depth` | `16` | `429` past this |
 | `--models` | `models` | searched before the download cache |
 | `--instance` | `stemd` | mDNS name |
 | `--no-mdns`, `--offline`, `--headless` | off | |
+| `--prolink` | off | watch Pro DJ Link and show each deck's loaded track |
+| `--prolink-download` | off | also download and separate each new track (needs `--prolink`) |
+| `--prolink-interface` | link-local, else first IPv4 | interface name, e.g. `en0` |
+| `--prolink-download-dir` | user data directory `/prolink` | where downloaded tracks land |
+| `--prolink-deck-number` | `7` | virtual CDJ number; 7 is outside the hardware range |
 
 MP3's sample rates stop at 48 kHz: MPEG-1 Layer III has three and 96 is not one
 of them, so that pair is refused rather than quietly encoded at 48.

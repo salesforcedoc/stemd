@@ -3403,6 +3403,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "stemd-ios"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "getrandom 0.3.4",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2",
+ "stemd-audio",
+ "stemd-core",
+ "stemd-models",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "stemd-mlx"
 version = "0.1.2"
 dependencies = [
@@ -3410,6 +3430,17 @@ dependencies = [
  "mlx-rs",
  "mlx-sys",
  "tracing",
+]
+
+[[package]]
+name = "stemd-models"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "sha2",
+ "stemd-core",
+ "tracing",
+ "ureq",
 ]
 
 [[package]]
@@ -3428,13 +3459,13 @@ dependencies = [
  "sha2",
  "stemd-audio",
  "stemd-core",
+ "stemd-models",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "ureq",
  "winit",
  "winresource",
  "zip",

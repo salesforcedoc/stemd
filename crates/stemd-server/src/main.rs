@@ -17,6 +17,7 @@ mod cache;
 mod cli;
 #[cfg(windows)]
 mod cuda;
+mod details;
 mod discovery;
 mod drops;
 mod ident;
@@ -25,10 +26,12 @@ mod logbuf;
 mod models;
 mod panics;
 mod precision;
+mod prolink;
 mod queue;
 mod serve;
 mod settings;
 mod shutdown;
+mod source;
 mod startup;
 mod switch;
 #[cfg(test)]

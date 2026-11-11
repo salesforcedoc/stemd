@@ -16,8 +16,10 @@ mod header;
 mod logs;
 #[cfg(test)]
 mod probe;
+mod prolink;
 mod quit;
 mod recents;
+mod reveal;
 mod section;
 mod status;
 mod theme;
@@ -106,6 +108,7 @@ struct Window {
     /// Which sections are open. Held here rather than in egui's memory so the
     /// defaults are stated in one place.
     show_recents: bool,
+    show_prolink: bool,
     show_logs: bool,
     /// Height the sections panel had last frame, so a change can be handed to
     /// the window instead of taken out of the drop zone.
@@ -119,12 +122,14 @@ struct Window {
 
 impl Window {
     fn new(state: Arc<AppState>, bind: SocketAddr, ctx: &egui::Context) -> Self {
+        let show_prolink = state.prolink.is_some();
         Self {
             state,
             bind,
             sheen: Sheen::new(ctx),
             logs: logs::View::default(),
             show_recents: true,
+            show_prolink,
             show_logs: false,
             sections_height: None,
             current: None,
@@ -208,6 +213,27 @@ impl Window {
             &mut self.show_recents,
             section::UNDER_LABEL,
             |ui| recents::list(ui, palette, &mut self.sheen, &self.state.drops, &recent),
+        );
+
+        let snapshot = self
+            .state
+            .prolink
+            .as_ref()
+            .map(|prolink| prolink.snapshot());
+        let decks = snapshot
+            .as_ref()
+            .filter(|snapshot| !snapshot.decks.is_empty())
+            .map(|snapshot| snapshot.decks.len().to_string());
+        let show_prolink = &mut self.show_prolink;
+        let sheen = &mut self.sheen;
+        section::show(
+            ui,
+            palette,
+            "Decks",
+            decks,
+            show_prolink,
+            section::UNDER_LABEL,
+            |ui| prolink::list(ui, palette, sheen, snapshot.as_ref()),
         );
 
         let mut clear_logs = false;

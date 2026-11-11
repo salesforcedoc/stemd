@@ -7,6 +7,15 @@ repository.workspace = true
 readme.workspace = true
 description = "Stem separation pipeline: PCM in, stems out, demucs v4 on MLX."
 
+[features]
+# MP3 is the only format that needs a C encoder, and it is the only format the
+# iOS app does not offer. Leaving it out there also leaves LAME's LGPL out of an
+# App Store binary. The `Mp3` variant still exists in every build; asking for it
+# without the feature is a runtime error, not a compile error, because the
+# desktop server selects formats from user input.
+default = ["mp3"]
+mp3 = ["dep:mp3lame-encoder"]
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
@@ -20,7 +29,7 @@ stemd-mlx = { path = "../stemd-mlx" }
 mlx-rs = { version = "0.25", features = ["metal", "safetensors"] }
 flacenc = { version = "0.5.1", default-features = false, features = ["log", "par"] }
 rubato = "5.0.0"
-mp3lame-encoder = "0.2.4"
+mp3lame-encoder = { version = "0.2.4", optional = true }
 
 [dev-dependencies]
 # A decoder written by someone else, so the FLAC round-trip test cannot agree

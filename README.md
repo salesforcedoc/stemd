@@ -19,6 +19,13 @@ beside it.
 
 ---
 
+> **This is a fork.** It is a fork of
+> [nsaintot/stemd](https://github.com/nsaintot/stemd), the original stemd
+> implementation, and is maintained at
+> [salesforcedoc/stemd](https://github.com/salesforcedoc/stemd). The install
+> links below still point at the original project's releases; builds here come
+> from this repository.
+
 ## What you get
 
 Three stems. In any lossless format the three files sum back to the original
@@ -124,7 +131,7 @@ two; see [docs/evaluation.md](docs/evaluation.md).
 | --- | --- |
 | stems | `<track>-stems/`, beside the track |
 | models | the user data directory, downloaded once |
-| cache | recent results, capped at 4 GB, emptied at every start |
+| cache | recent results, kept across launches, capped at 4 GB; `index.json` lists them |
 
 Repeating a track already separated returns the cached result: entries are keyed
 by the audio and by everything else that changes the output.
@@ -149,6 +156,7 @@ cargo build --release
 | [docs/internals.md](docs/internals.md) | cache, queue, discovery, model loading |
 | [docs/evaluation.md](docs/evaluation.md) | how the models were chosen and measured |
 | [docs/models.md](docs/models.md) | where the weights come from, and their licence |
+| [docs/ios.md](docs/ios.md) | the iOS app: its API, FFI and build |
 
 ## License
 

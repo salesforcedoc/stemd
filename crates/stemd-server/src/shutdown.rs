@@ -45,6 +45,11 @@ pub fn now(state: &AppState, reason: &str) -> ! {
     if let Some(advertiser) = &state.advertiser {
         advertiser.withdraw();
     }
+    // The monitor's threads wake from a short socket timeout; stopping is a
+    // flag, not a join, because this function never returns.
+    if let Some(prolink) = &state.prolink {
+        prolink.stop();
+    }
     let withdrawn = began.elapsed();
 
     // Quitting is meant to look instant. It is the last thing anyone sees the

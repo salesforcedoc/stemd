@@ -10,6 +10,7 @@ description = "Host-side stem separation service: HTTP, mDNS discovery and a con
 [dependencies]
 stemd-core = { path = "../stemd-core" }
 stemd-audio = { path = "../stemd-audio" }
+stemd-models = { path = "../stemd-models" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,8 +25,6 @@ parking_lot = "0.12.5"
 thiserror.workspace = true
 eframe = { version = "0.35.0", default-features = false, features = ["glow", "default_fonts"] }
 if-addrs = "0.15.0"
-# First-run model fetch: HTTP plus a pinned digest.
-ureq = "3.4.0"
 sha2 = "0.10"
 # The per-platform cache and data directories. See `cache::default_dir`.
 dirs = "6"

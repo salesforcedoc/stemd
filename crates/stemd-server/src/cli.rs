@@ -41,8 +41,9 @@ pub struct Args {
     /// Where separated stems are kept. Defaults to a `stemd` directory under the
     /// platform's cache directory.
     ///
-    /// Its contents are deleted at every start, so point it at a directory
-    /// stemd owns rather than one that holds anything else.
+    /// Kept across launches and capped by `--cache-max-gb`; the window's Empty
+    /// cache button clears it. Point it at a directory stemd owns rather than one
+    /// that holds anything else.
     #[arg(long)]
     pub cache_dir: Option<PathBuf>,
 
@@ -88,14 +89,52 @@ pub struct Args {
     /// Longest track accepted, which is the only size limit there is.
     ///
     /// Peak memory is roughly 1.8 GB plus 155 MB per audio-minute, so length is what
-    /// bounds it. The HTTP body limit is derived from this rather than configured
-    /// separately: the upload is raw PCM, so a second knob could only disagree.
-    #[arg(long, default_value_t = 10.0)]
+    /// bounds it: at the default 90 minutes that is about 16 GB. The HTTP body limit
+    /// is derived from this rather than configured separately: the upload is raw
+    /// PCM, so a second knob could only disagree. At 96 kHz f32le the derived limit
+    /// is about 4.1 GB, and the whole body is buffered before decoding.
+    #[arg(long, default_value_t = 90.0)]
     pub max_track_minutes: f64,
 
     /// mDNS instance name clients will see.
     #[arg(long, default_value = "stemd")]
     pub instance: String,
+
+    /// Watch the LAN for Pioneer Pro DJ Link decks and show what each has
+    /// loaded.
+    ///
+    /// Off by default. The monitor listens passively; it only announces itself
+    /// as a virtual CDJ while a real player is present. Watching reads a deck's
+    /// `export.pdb` for titles, but never fetches audio.
+    #[arg(long)]
+    pub prolink: bool,
+
+    /// Also download a newly seen rekordbox-analyzed USB/SD track once and
+    /// separate it.
+    ///
+    /// Requires `--prolink`. Without this, the Decks section is a live display
+    /// only.
+    #[arg(long, requires = "prolink")]
+    pub prolink_download: bool,
+
+    /// Interface to watch for Pro DJ Link, by name such as `en0`.
+    ///
+    /// Defaults to a link-local IPv4 interface, which is what a rig without
+    /// DHCP uses, then to the first non-loopback interface.
+    #[arg(long)]
+    pub prolink_interface: Option<String>,
+
+    /// Where tracks downloaded from a deck are written. They are separated
+    /// beside this file, exactly like a dropped track.
+    ///
+    /// Defaults to a `prolink` directory under the user data directory.
+    #[arg(long)]
+    pub prolink_download_dir: Option<PathBuf>,
+
+    /// Player number the monitor announces as. 7 is outside the 1–6 range a
+    /// real CDJ uses, so it cannot collide with hardware.
+    #[arg(long, default_value_t = 7)]
+    pub prolink_deck_number: u8,
 
     /// Do not advertise over mDNS. Clients then need the address out of band.
     #[arg(long)]

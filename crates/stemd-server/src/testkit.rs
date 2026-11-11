@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use stemd_core::{Audio, DspMode, OutputRate, StemFormat, Stems};
 
-use crate::cache::{Cache, Entry, Output};
+use crate::cache::{Cache, Entry, Output, Provenance};
 
 /// Makes each test root unique. A timestamp alone is not enough: tests run in
 /// parallel within one process, and two starting inside the same clock tick
@@ -61,6 +61,11 @@ pub fn publish(cache: &Cache, key: &str, frames: usize, separation_secs: f64) ->
                 dsp: DspMode::default(),
             },
             separation_secs,
+            Provenance {
+                details: crate::details::TrackDetails::default(),
+                model: "test-model".into(),
+                source_hash: None,
+            },
         )
         .expect("publish")
 }

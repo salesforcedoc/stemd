@@ -93,18 +93,57 @@ pub fn prepare(args: &Args, logs: LogBuffer, addr: SocketAddr) -> Result<Server>
 
     spawn_reaper(Arc::clone(&stems), Arc::clone(&store), Arc::clone(&queue));
 
+    // Started before the app state exists, so the monitor never holds a
+    // reference to it: downloaded paths come back over a channel instead.
+    let started = match crate::prolink::Config::from_args(args) {
+        Ok(Some(config)) => match crate::prolink::start(config) {
+            Ok(started) => Some(started),
+            Err(err) => {
+                tracing::warn!("ProLink is off: {err:#}");
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!("ProLink is off: {err:#}");
+            None
+        }
+    };
+    let (prolink, downloads) = match started {
+        Some(started) => (Some(started.handle), Some(started.downloads)),
+        None => (None, None),
+    };
+
+    let state = Arc::new(AppState {
+        store,
+        cache: stems,
+        queue,
+        switcher,
+        logs,
+        drops: Arc::default(),
+        settings,
+        max_track_secs: args.max_track_secs(),
+        advertiser,
+        prolink,
+    });
+
+    // A downloaded track is separated exactly like one dropped on the window.
+    if let Some(downloads) = downloads {
+        let state = Arc::clone(&state);
+        std::thread::Builder::new()
+            .name("stemd-prolink-sink".into())
+            .spawn(move || {
+                for download in downloads {
+                    state
+                        .drops
+                        .accept_with_details(&state, download.path, download.details);
+                }
+            })
+            .context("spawning the ProLink queue thread")?;
+    }
+
     Ok(Server {
-        state: Arc::new(AppState {
-            store,
-            cache: stems,
-            queue,
-            switcher,
-            logs,
-            drops: Arc::default(),
-            settings,
-            max_track_secs: args.max_track_secs(),
-            advertiser,
-        }),
+        state,
         max_upload,
         cache_summary,
     })
