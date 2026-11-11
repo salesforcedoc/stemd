@@ -165,7 +165,7 @@ fn load_existing(root: &Path) -> (HashMap<String, Arc<Job>>, u64) {
         let job = Arc::new(Job {
             id: id.clone(),
             key: detail.key,
-            source_hash: detail.source_hash,
+            source_hash: Mutex::new(detail.source_hash),
             created,
             title: detail.title,
             artist: detail.artist,
@@ -291,6 +291,7 @@ impl Jobs {
         let prefix: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
         let key = content_key(&body, format, &self.model_id(), &[]);
         if let Some(job) = self.find_reusable(&key, &prefix, format) {
+            self.adopt_source_hash(&job, source_hash.as_deref());
             return Ok((job.view(&self.token), true));
         }
         let (id, seq) = self.new_id(&prefix);
@@ -351,6 +352,7 @@ impl Jobs {
         let prefix: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
         let key = content_key(&body, format, &self.model_id(), extra.as_bytes());
         if let Some(job) = self.find_reusable(&key, &prefix, format) {
+            self.adopt_source_hash(&job, source_hash.as_deref());
             return Ok((job.view(&self.token), true));
         }
         let (id, seq) = self.new_id(&prefix);
@@ -437,7 +439,7 @@ impl Jobs {
         let job = Arc::new(Job {
             id: id.clone(),
             key,
-            source_hash,
+            source_hash: Mutex::new(source_hash),
             created: seq,
             title,
             artist,
@@ -589,7 +591,7 @@ impl Jobs {
             .lock()
             .values()
             .find(|job| {
-                job.source_hash == source_hash
+                *job.source_hash.lock() == source_hash
                     && !matches!(
                         &*job.state.lock(),
                         State::Failed { .. } | State::Cancelled
@@ -607,6 +609,52 @@ impl Jobs {
     pub fn lookup(&self, source_hash: &str, format: StemFormat) -> Option<JobView> {
         self.find_source(source_hash, format)
             .map(|job| job.view(&self.token))
+    }
+
+    /// Record the identity a client sent for a job it did not have to create.
+    ///
+    /// A job can precede the preflight, or be named by an older client whose
+    /// hash was computed differently, and the content key still finds it. Until
+    /// this runs, every preflight for that track is a 404 even though the job
+    /// is listed. Newest value wins: the caller has just supplied the identity
+    /// of the file it is holding, and that is the one the next lookup will use.
+    ///
+    /// A finished job's `detail.json` is the record, so it is rewritten in
+    /// place. A queued or running job writes its detail when it finishes, and
+    /// that write already takes the updated value.
+    fn adopt_source_hash(&self, job: &Arc<Job>, source_hash: Option<&str>) {
+        let Some(hash) = source_hash else { return };
+        if !job.set_source_hash(hash) {
+            return;
+        }
+        let path = job.dir.join("detail.json");
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            // Not finished yet; the completion write will carry it.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            Err(err) => {
+                tracing::warn!("reading {}: {err}", path.display());
+                return;
+            }
+        };
+        let mut detail: Detail = match serde_json::from_slice(&bytes) {
+            Ok(detail) => detail,
+            Err(err) => {
+                tracing::warn!("parsing {}: {err}", path.display());
+                return;
+            }
+        };
+        detail.source_hash = hash.to_owned();
+        match serde_json::to_vec_pretty(&detail) {
+            Ok(bytes) => {
+                if let Err(err) = std::fs::write(&path, bytes) {
+                    tracing::warn!("writing {}: {err}", path.display());
+                } else {
+                    tracing::debug!("tagged {} with source {hash}", job.id);
+                }
+            }
+            Err(err) => tracing::warn!("serialising {}: {err}", path.display()),
+        }
     }
 
     pub fn stem(&self, id: &str, name: &str) -> Option<Stem> {
@@ -701,7 +749,9 @@ struct Job {
     key: String,
     /// Client-supplied identity of the source file. Empty when the client did
     /// not provide one; it lets a preflight find a separation before uploading.
-    source_hash: String,
+    /// Behind a lock because a job that already exists is tagged the first time
+    /// a client that knows the identity asks for it.
+    source_hash: Mutex<String>,
     created: u64,
     title: Option<String>,
     artist: Option<String>,
@@ -717,6 +767,16 @@ struct Job {
 impl Job {
     fn set(&self, state: State) {
         *self.state.lock() = state;
+    }
+
+    /// Record the client's identity for the source. True when it changed.
+    fn set_source_hash(&self, hash: &str) -> bool {
+        let mut held = self.source_hash.lock();
+        if *held == hash {
+            return false;
+        }
+        *held = hash.to_owned();
+        true
     }
 
     fn view(&self, token: &str) -> JobView {
@@ -1012,7 +1072,7 @@ fn write_detail(
 ) -> Result<()> {
     let detail = Detail {
         key: job.key.clone(),
-        source_hash: job.source_hash.clone(),
+        source_hash: job.source_hash.lock().clone(),
         title: job.title.clone(),
         artist: job.artist.clone(),
         album: job.album.clone(),
@@ -1299,6 +1359,60 @@ mod tests {
         assert!(reused);
         assert_eq!(view.id, id);
         assert_eq!(jobs.count(), 1);
+
+        jobs.stop();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn reusing_an_old_entry_records_the_source_hash_it_was_told() {
+        let root = temp_dir("legacy-tag");
+        let body: &[u8] = b"a-raw-pcm-body";
+        let digest = Sha256::digest(body);
+        let prefix: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
+        let id = format!("{prefix}-0");
+        write_job(&root, &id, "", "Legacy");
+
+        let jobs = Jobs::start(Options {
+            root: root.clone(),
+            models_dir: root.join("models"),
+            preset: Preset::Fast,
+            max_track_secs: 60.0,
+            token: "t".to_owned(),
+        })
+        .unwrap();
+        assert!(jobs.lookup("fresh1", StemFormat::Flac).is_none());
+
+        let (view, reused) = jobs
+            .submit_pcm(
+                axum::body::Bytes::from_static(body),
+                44_100,
+                2,
+                PcmFormat::F32le,
+                None,
+                None,
+                None,
+                StemFormat::Flac,
+                Some("fresh1"),
+            )
+            .unwrap();
+        assert!(reused);
+        assert_eq!(view.id, id);
+
+        // The point of the whole exercise: the reuse taught the old entry the
+        // identity the preflight asks for, so the next load does not upload.
+        let hit = jobs
+            .lookup("fresh1", StemFormat::Flac)
+            .expect("lookup after a tagged reuse");
+        assert_eq!(hit.id, id);
+        assert_eq!(jobs.count(), 1);
+
+        // And it survives a relaunch, because the detail file is the record.
+        let detail: Detail = serde_json::from_slice(
+            &std::fs::read(root.join(&id).join("detail.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(detail.source_hash, "fresh1");
 
         jobs.stop();
         std::fs::remove_dir_all(&root).ok();
