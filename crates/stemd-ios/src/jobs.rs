@@ -170,7 +170,7 @@ fn load_existing(root: &Path) -> (HashMap<String, Arc<Job>>, u64) {
             title: detail.title,
             artist: detail.artist,
             album: detail.album,
-            source: Source::None,
+            source: Mutex::new(Source::None),
             dir,
             state: Mutex::new(State::Done {
                 seconds: detail.separation_secs,
@@ -444,7 +444,7 @@ impl Jobs {
             title,
             artist,
             album,
-            source,
+            source: Mutex::new(source),
             dir,
             state: Mutex::new(State::Queued),
             cancelled: AtomicBool::new(false),
@@ -756,7 +756,12 @@ struct Job {
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
-    source: Source,
+    /// The audio to separate. Taken out and dropped as soon as the planar mix
+    /// exists: a raw PCM upload is the whole track, and keeping it beside the
+    /// mix -- and in the jobs map after the job finished -- doubled the peak
+    /// and left every completed job holding its upload until the app was
+    /// killed for memory.
+    source: Mutex<Source>,
     dir: PathBuf,
     state: Mutex<State>,
     cancelled: AtomicBool,
@@ -777,6 +782,13 @@ impl Job {
         }
         *held = hash.to_owned();
         true
+    }
+
+    /// Drop the audio a job was going to separate. For a job that never reaches
+    /// the worker -- cancelled, or the model would not load -- this is the only
+    /// place the upload is released.
+    fn release_source(&self) {
+        *self.source.lock() = Source::None;
     }
 
     fn view(&self, token: &str) -> JobView {
@@ -877,6 +889,7 @@ fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
         };
         if work.job.cancelled.load(Ordering::Relaxed) {
             work.job.set(State::Cancelled);
+            work.job.release_source();
             continue;
         }
         if separator.is_none() {
@@ -886,6 +899,7 @@ fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
                     work.job.set(State::Failed {
                         error: format!("{err:#}"),
                     });
+                    work.job.release_source();
                     continue;
                 }
             }
@@ -897,6 +911,19 @@ fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
             Err(err) => work.job.set(State::Failed {
                 error: format!("{err:#}"),
             }),
+        }
+        // MLX keeps freed buffers in its allocator cache instead of returning
+        // them. The desktop lets an idle timer collect that; an app has no idle
+        // timer, and on a phone the cache from one track is enough to make the
+        // next one the process's last. Live arrays -- the model -- are not
+        // touched, so this only gives back what the separation left behind.
+        let freed = stemd_core::memory::release();
+        if freed > 0 {
+            tracing::debug!(
+                "released {:.1} MB of MLX cache after {}",
+                freed as f64 / 1e6,
+                work.job.id
+            );
         }
     }
 }
@@ -911,20 +938,29 @@ fn separate_one(
         progress: Progress::new(Stage::Analysing),
     });
 
-    let audio = match &job.source {
+    // The uploaded audio is only needed to build the mix. Taking it out of the
+    // job and letting the match consume it frees a raw PCM upload before the
+    // model runs, instead of holding it for the whole separation and then in
+    // the jobs map for as long as the job is listed.
+    let source = std::mem::replace(&mut *job.source.lock(), Source::None);
+    let (audio, source_file) = match source {
         Source::File(path) => {
-            let decoded = stemd_audio::decode(path)
+            let decoded = stemd_audio::decode(&path)
                 .with_context(|| format!("decoding {}", path.display()))?;
-            Audio::checked(decoded.data, decoded.sample_rate)
-                .with_context(|| format!("decoding {}", path.display()))?
+            let audio = Audio::checked(decoded.data, decoded.sample_rate)
+                .with_context(|| format!("decoding {}", path.display()))?;
+            (audio, Some(path))
         }
         Source::Pcm {
             bytes,
             format,
             sample_rate,
             channels,
-        } => Audio::from_interleaved(bytes, *format, *channels, *sample_rate)
-            .context("decoding the uploaded PCM")?,
+        } => (
+            Audio::from_interleaved(&bytes, format, channels, sample_rate)
+                .context("decoding the uploaded PCM")?,
+            None,
+        ),
         Source::None => bail!("a job loaded from disk has no audio to separate"),
     };
 
@@ -980,8 +1016,8 @@ fn separate_one(
 
     // The source file is no longer needed: the stems are the result, and the
     // app's storage budget is not a place to keep a second copy of every track.
-    // A PCM upload never became a file.
-    if let Source::File(path) = &job.source {
+    // A PCM upload never became a file; it was dropped when the mix was built.
+    if let Some(path) = source_file {
         let _ = std::fs::remove_file(path);
     }
     Ok(())
