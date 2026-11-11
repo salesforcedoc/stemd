@@ -28,30 +28,29 @@ final class StemdServer {
         var config: [String: Any] = [
             "data_dir": data.path,
             "preset": preset,
-            // Every interface on an ephemeral port: the stems are meant to be
-            // fetched from another device. The token is generated in Rust and
-            // returned below; nothing is reachable without it.
-            "bind": "0.0.0.0:0",
+            // Every interface, on a fixed port. The stems are meant to be
+            // fetched from another device, and a port that changes on every
+            // launch makes a typed address stale and makes an mDNS cache hold a
+            // dead one. The desktop's default is the same 8420.
+            "bind": "0.0.0.0:8420",
             "max_track_secs": 900,
+            // Off by default because serving a deck is what this app is for,
+            // and the CDJ sidecar has no way to send a token. The Debug screen
+            // can turn it back on, and that choice is remembered across
+            // launches.
+            "require_token": false,
         ]
 #if targetEnvironment(simulator)
-        // The simulator shares the host's network, so a fixed port and a known
-        // token let curl drive the embedded server during development. The
-        // emulator's sidecar cannot send a token either, so the simulator build
-        // starts open; a device keeps the token and offers the switch in Debug.
+        // A known token lets curl drive the embedded server during development.
         // MLX cannot use Metal in the simulator, so this build is CPU-only.
-        config["bind"] = "0.0.0.0:8420"
         config["token"] = "simulator"
-        config["require_token"] = false
 #endif
 #if os(iOS)
         if ProcessInfo.processInfo.isiOSAppOnMac {
             // "Designed for iPad" runs the iOS app on Apple-silicon macOS.
             // Metal works there, unlike the simulator, so this is the fast
-            // development path; fixed port and token for curl-driven tests.
-            config["bind"] = "0.0.0.0:8420"
+            // development path; a known token for curl-driven tests.
             config["token"] = "designed"
-            config["require_token"] = false
         }
 #endif
         let json = String(decoding: try JSONSerialization.data(withJSONObject: config), as: UTF8.self)

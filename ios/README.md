@@ -45,8 +45,11 @@ in progress, but it cannot run in the background.
 
 ## Limitations
 
-- The stem server is reachable from the whole local network by design; the token
-  gates it. Use `127.0.0.1:0` in the Rust config if that is not wanted.
+- The stem server is reachable from the whole local network by design, and it
+  starts without requiring a token so a deck can use it. **Require token** in
+  Debug restricts it to clients that send one (the app itself and its share
+  links); use it on a network you do not trust. Use `127.0.0.1:0` in the Rust
+  config if the server should not be reachable at all.
 - `fast` is the default and the only preset that fits comfortably in a phone's
   memory. `quality` needs two artefacts and is slower than realtime on a phone.
 - The model download cannot be cancelled yet; a failed one is retried from the

@@ -64,7 +64,7 @@ The iOS server now provides all of it:
 | Health | The desktop fields are included alongside the app's own (`model`, `model_id`, `backend`, `device`, `sample_rate`, `channels`, `stems`). |
 | Raw PCM | Accepted when `format` is `f32le`/`s16le` (or `pcm16`/`pcm32`); `sample_rate` and `channels` come from the query. `output_format` selects the container. |
 | Job document | `stage`, `completed`, `total`, `fraction`, and after completion `sample_rate`, `channels`, `frames`, `format`. |
-| No token | The **Require token** switch in Debug turns it off at runtime. The simulator build starts with it off. |
+| No token | The server starts without requiring one, because the sidecar cannot send it. **Require token** in Debug turns it on, and the choice is remembered. |
 | Stems | All three are written; the sidecar fetches the two it plays and rebuilds drums itself. |
 
 `output_sample_rate` and `dsp_mode` are accepted and currently ignored: the
@@ -74,8 +74,9 @@ would need the desktop's output-resampling path.
 
 > [!WARNING]
 >
-> Turning off **Require token** makes every endpoint reachable by any device on
-> the network. Use it on a trusted DJ LAN, and turn it back on afterwards.
+> The app starts open so a deck can use it: every endpoint is reachable by any
+> device on the network. Turn **Require token** on in Debug when the network is
+> not one you trust; the choice survives a relaunch.
 
 ## HTTP API
 
@@ -161,12 +162,13 @@ void  stemd_ios_free_string(char *s);
 void  stemd_ios_init_logging(void);              // optional; start does it too
 ```
 
-Every request except `GET /v1/health` needs the token, as
-`Authorization: Bearer <token>` or `?token=<token>`. The query spelling is what
-the stem URLs carry, so a player can be handed one without knowing the header
-convention. Omit `token` in the config and one is generated and returned; the
-server can be reachable from whatever network the phone is on, and that is not a
-network this app controls.
+When `require_token` is on, every request except `GET /v1/health` needs the
+token, as `Authorization: Bearer <token>` or `?token=<token>`. The query
+spelling is what the stem URLs carry, so a player can be handed one without
+knowing the header convention. The app passes `require_token: false` because the
+CDJ sidecar cannot send one; an embedder that omits the field gets the server's
+default, which is to require it. Omit `token` in the config and one is generated
+and returned either way.
 
 The config is JSON:
 
