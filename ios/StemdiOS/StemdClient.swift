@@ -76,6 +76,13 @@ final class StemdServer {
         self.token = token
         self.tokenRequired = (object["token_required"] as? Bool)
             ?? ((object["token_required"] as? NSNumber)?.boolValue ?? true)
+        // A device build starts with the token required, and the deck's sidecar
+        // has no way to send one. Remember the answer so a user who turned it
+        // off does not have to rediscover that after every launch.
+        if let stored = UserDefaults.standard.object(forKey: Self.tokenPreferenceKey) as? Bool {
+            self.tokenRequired = stored
+            stemd_ios_set_token_required(stored ? 1 : 0)
+        }
         // Bonjour advertising needs no multicast entitlement, just the local
         // network permission and NSBonjourServices. Failure is not fatal: a
         // client can still type the address.
@@ -89,10 +96,14 @@ final class StemdServer {
         token = ""
     }
 
+    private static let tokenPreferenceKey = "stemd.requireToken"
+
     /// Switch the token requirement at runtime, for clients (the CDJ sidecar)
-    /// that have no way to send one.
+    /// that have no way to send one. Persisted: this is the setting that makes
+    /// the app usable by a deck, and it must not reset with the process.
     func setTokenRequired(_ required: Bool) {
         tokenRequired = required
+        UserDefaults.standard.set(required, forKey: Self.tokenPreferenceKey)
         stemd_ios_set_token_required(required ? 1 : 0)
     }
 

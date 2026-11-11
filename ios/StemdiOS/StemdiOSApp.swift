@@ -226,6 +226,20 @@ struct ContentView: View {
             } else if let health = model.health {
                 LabeledContent("Model", value: health.preset.capitalized)
                 LabeledContent("Jobs", value: "\(health.jobs)")
+                if health.tokenRequired {
+                    // The one setting that decides whether any deck can use this
+                    // app at all. It used to be reachable only through the
+                    // debug screen, and a 401 mid-upload is hard to read.
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("A deck cannot connect while the token is required: its sidecar has no way to send one.")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                        Button("Allow decks (turn off the token)") {
+                            model.setTokenRequired(false)
+                        }
+                        .font(.footnote)
+                    }
+                }
                 if let base = StemdServer.shared.shareBase() {
                     // The token is in every stem URL; this is the address to
                     // type on the other device, and the app shows it rather
