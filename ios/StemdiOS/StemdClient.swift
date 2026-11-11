@@ -107,17 +107,32 @@ final class StemdServer {
         localIPv4().flatMap { URL(string: "http://\($0):\(port)/v1") }
     }
 
+    /// The address another device on the LAN should use.
+    ///
+    /// Wi-Fi first (`en0` on iOS), then any other Ethernet-like interface
+    /// (`en1+`, where a USB-C adapter lands). Tunnel, cellular and AWDL/LLW
+    /// interfaces are skipped: iOS lists them beside Wi-Fi, and taking the
+    /// first IPv4 can hand back a VPN's `10.x` address that nothing on the
+    /// local network can reach — which is what happened on an iPad whose Wi-Fi
+    /// was fine and whose VPN was up.
     private func localIPv4() -> String? {
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else { return nil }
         defer { freeifaddrs(head) }
+
+        var ethernet: String?
+        var other: String?
         for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let interface = pointer.pointee
             guard let address = interface.ifa_addr,
                   address.pointee.sa_family == UInt8(AF_INET)
             else { continue }
-            // en0 is Wi-Fi on iOS; a USB-C Ethernet adapter shows up as en1+,
-            // so take the first IPv4 rather than insisting on en0.
+            let flags = interface.ifa_flags
+            guard flags & UInt32(IFF_UP) != 0,
+                  flags & UInt32(IFF_LOOPBACK) == 0
+            else { continue }
+
+            let name = String(cString: interface.ifa_name)
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             let result = getnameinfo(
                 address,
@@ -128,12 +143,28 @@ final class StemdServer {
                 0,
                 NI_NUMERICHOST
             )
-            if result == 0 {
-                let text = String(cString: host)
-                if !text.hasPrefix("127.") { return text }
+            guard result == 0 else { continue }
+            let text = String(cString: host)
+            guard !text.hasPrefix("169.254.") else { continue }
+
+            if name == "en0" {
+                return text                      // Wi-Fi on iOS
             }
+            if name.hasPrefix("en") {
+                if ethernet == nil { ethernet = text }
+                continue
+            }
+            // A tunnel, the cellular PDP interface, or AirDrop's radio is not
+            // reachable from the deck's LAN.
+            if name.hasPrefix("utun") || name.hasPrefix("ipsec") ||
+                name.hasPrefix("tun") || name.hasPrefix("tap") ||
+                name.hasPrefix("pdp_ip") || name.hasPrefix("awdl") ||
+                name.hasPrefix("llw") || name == "ap1" {
+                continue
+            }
+            if other == nil { other = text }
         }
-        return nil
+        return ethernet ?? other
     }
 }
 
