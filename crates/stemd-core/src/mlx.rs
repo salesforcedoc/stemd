@@ -144,44 +144,51 @@ impl MlxSeparator {
     /// The normalised mixture as a `[1, C, T]` array.
     fn to_array(&self, mix: &Audio, norm: &Normalisation) -> Result<Array> {
         let frames = mix.frames();
+        stemd_mlx::trace::note("to_array: begin");
         let mut flat = Vec::with_capacity(self.channels * frames);
         for channel in &mix.data {
             flat.extend(channel.iter().map(|&v| norm.apply(v)));
         }
         let shape = [1, i32::try_from(self.channels)?, i32::try_from(frames)?];
-        Ok(Array::from_slice(&flat, &shape))
+        stemd_mlx::trace::note("to_array: flat built");
+        let array = Array::from_slice(&flat, &shape);
+        stemd_mlx::trace::note("to_array: array built");
+        Ok(array)
     }
 
-    /// A `[1, S, C, T]` result back into one [`Audio`] per model source, with
-    /// the normalisation undone.
-    fn to_sources(&self, out: &Array, norm: &Normalisation, frames: usize) -> Result<Vec<Audio>> {
-        // Evaluated already by `separate`, but reading the buffer of a lazy
-        // array is undefined rather than merely slow, so this is not optional.
-        mlx_rs::transforms::eval([out])?;
-        let flat = out
-            .try_as_slice::<f32>()
-            .map_err(|e| anyhow::anyhow!("the separated track is not contiguous f32: {e:?}"))?;
-
-        let stride = self.channels * frames;
-        Ok((0..self.sources.len())
-            .map(|source| {
-                let plane = &flat[source * stride..(source + 1) * stride];
-                let data = (0..self.channels)
-                    .map(|c| {
-                        plane[c * frames..(c + 1) * frames]
-                            .iter()
-                            .map(|&v| norm.restore(v))
-                            .collect()
-                    })
-                    .collect();
-                Audio::new(data, self.sample_rate)
-            })
-            .collect())
+    /// One `[1, C, T]` result per model source back into [`Audio`], with the
+    /// normalisation undone.
+    fn to_sources(&self, out: &[Array], norm: &Normalisation, frames: usize) -> Result<Vec<Audio>> {
+        let mut sources = Vec::with_capacity(out.len());
+        for array in out {
+            // Evaluated already by `over_track`, but reading the buffer of a
+            // lazy array is undefined rather than merely slow, so this is not
+            // optional.
+            mlx_rs::transforms::eval([array])?;
+            let flat = array
+                .try_as_slice::<f32>()
+                .map_err(|e| anyhow::anyhow!("the separated track is not contiguous f32: {e:?}"))?;
+            let data = (0..self.channels)
+                .map(|c| {
+                    flat[c * frames..(c + 1) * frames]
+                        .iter()
+                        .map(|&v| norm.restore(v))
+                        .collect()
+                })
+                .collect();
+            sources.push(Audio::new(data, self.sample_rate));
+        }
+        Ok(sources)
     }
 }
 
-impl Separate for MlxSeparator {
-    fn separate(&mut self, mix: &Audio, sink: &dyn ProgressSink) -> Result<Stems> {
+impl MlxSeparator {
+    /// The whole track in one go.
+    ///
+    /// Fine where the GPU can hold arrays the length of the track. On iOS it
+    /// cannot for anything deck-length: see [`Self::separate_windows`].
+    fn separate_whole(&mut self, mix: &Audio, sink: &dyn ProgressSink) -> Result<Stems> {
+        stemd_mlx::trace::note("sep: begin");
         self.check_geometry(mix)?;
         sink.update(Progress::new(Stage::Analysing));
 
@@ -191,6 +198,7 @@ impl Separate for MlxSeparator {
         }
         let norm = Normalisation::of(mix);
         let input = self.to_array(mix, &norm)?;
+        stemd_mlx::trace::note("sep: input array");
 
         // Cancellation costs one segment rather than one track, because the
         // callback can refuse to continue and `over_track` stops where it is.
@@ -211,15 +219,126 @@ impl Separate for MlxSeparator {
                 Ok(())
             },
         )?;
+        stemd_mlx::trace::note("sep: over_track done");
 
         sink.update(Progress::new(Stage::Reconstructing));
         let sources = self.to_sources(&separated, &norm, frames)?;
+        stemd_mlx::trace::note("sep: sources");
 
         Ok(Stems {
             model_residual_db: unexplained_db(mix, &sources),
             shipped: fold_into_shipped(&sources, &self.sources)
                 .context("folding the model's sources into the shipped stems")?,
         })
+    }
+
+    /// Separate a track in windows, crossfading the seams.
+    ///
+    /// iOS only. The whole-track path builds arrays as long as the track, and
+    /// on an iPad an eight-minute track's array takes the process down at the
+    /// first evaluation even with gigabytes free; two-minute tracks have been
+    /// running all along. Window sizes that work are a smaller and safer change
+    /// than teaching the backend to like the large ones.
+    ///
+    /// The shipped stems are plain vectors, so the crossfade and the
+    /// accumulation are host work: no window ever becomes an array longer than
+    /// [`chunk`].
+    #[cfg(target_os = "ios")]
+    fn separate_windows(
+        &mut self,
+        mix: &Audio,
+        sink: &dyn ProgressSink,
+        chunk: usize,
+        overlap: usize,
+    ) -> Result<Stems> {
+        let frames = mix.frames();
+        let channels = self.channels;
+        let mut windows = Vec::new();
+        let mut start = 0usize;
+        while start < frames {
+            let end = (start + chunk).min(frames);
+            windows.push((start, end));
+            if end == frames {
+                break;
+            }
+            start += chunk - overlap;
+        }
+        let count = windows.len();
+        stemd_mlx::trace::note(&format!("sep: {} windows of {chunk} frames", count));
+
+        let mut merged: Vec<(&'static str, Vec<Vec<f32>>)> = Vec::new();
+        let mut merged_len = 0usize;
+        let mut residual = 0.0f64;
+        for (index, &(from, to)) in windows.iter().enumerate() {
+            let slice = Audio::new(
+                (0..channels)
+                    .map(|c| mix.data[c][from..to].to_vec())
+                    .collect(),
+                mix.sample_rate,
+            );
+            let window_sink = WindowSink {
+                inner: sink,
+                index,
+                count,
+            };
+            let stems = self.separate_whole(&slice, &window_sink)?;
+            residual += stems.model_residual_db;
+
+            if index == 0 {
+                merged = stems
+                    .shipped
+                    .into_iter()
+                    .map(|(name, audio)| (name, audio.data))
+                    .collect();
+                merged_len = to - from;
+            } else {
+                let shared = merged_len.saturating_sub(from);
+                for (name, audio) in stems.shipped {
+                    if let Some((_, data)) = merged.iter_mut().find(|(known, _)| *known == name) {
+                        crossfade_append(data, audio.data, shared);
+                    }
+                }
+                merged_len += (to - from) - shared;
+            }
+
+            // MLX keeps every buffer a window's graph frees. One window's worth
+            // (about 2 GB here) is survivable; two is not, and the app is
+            // killed before the job-level release ever runs. Give it back after
+            // each window: the model is live and stays, everything else is dead.
+            let freed = stemd_mlx::memory::release();
+            stemd_mlx::trace::note(&format!(
+                "sep: window {index}/{count} done, released {freed}"
+            ));
+        }
+
+        stemd_mlx::trace::note("sep: windows merged");
+        Ok(Stems {
+            model_residual_db: if count == 0 {
+                0.0
+            } else {
+                residual / count as f64
+            },
+            shipped: merged
+                .into_iter()
+                .map(|(name, data)| (name, Audio::new(data, self.sample_rate)))
+                .collect(),
+        })
+    }
+}
+
+impl Separate for MlxSeparator {
+    fn separate(&mut self, mix: &Audio, sink: &dyn ProgressSink) -> Result<Stems> {
+        #[cfg(target_os = "ios")]
+        {
+            const CHUNK_SECS: usize = 120;
+            const OVERLAP_SECS: usize = 2;
+            let chunk = CHUNK_SECS * self.sample_rate as usize;
+            if mix.frames() > chunk {
+                let overlap = OVERLAP_SECS * self.sample_rate as usize;
+                return self.separate_windows(mix, sink, chunk, overlap);
+            }
+        }
+        self.separate_whole(mix, sink)
     }
 
     fn info(&self) -> BackendInfo {
@@ -235,5 +354,59 @@ impl Separate for MlxSeparator {
             // falls back to the CPU and used to say otherwise.
             device: stemd_mlx::Accelerator::detect().as_str().into(),
         }
+    }
+}
+
+/// Maps one window's progress onto the whole track's.
+#[cfg(target_os = "ios")]
+struct WindowSink<'a> {
+    inner: &'a dyn ProgressSink,
+    index: usize,
+    count: usize,
+}
+
+#[cfg(target_os = "ios")]
+impl ProgressSink for WindowSink<'_> {
+    fn update(&self, progress: Progress) {
+        let count = self.count.max(1) as f32;
+        let fraction = (self.index as f32 + progress.fraction.clamp(0.0, 1.0)) / count;
+        self.inner.update(Progress {
+            stage: progress.stage,
+            completed: progress.completed,
+            total: progress.total,
+            fraction: fraction.clamp(0.0, 1.0),
+            detail: progress.detail,
+        });
+    }
+
+    fn cancelled(&self) -> bool {
+        self.inner.cancelled()
+    }
+}
+
+/// Append `next` to `into`, crossfading the `shared` samples they overlap.
+///
+/// A linear ramp over the shared region. Both sides are the same audio through
+/// the same model, so any smooth pair that sums to one will do; the ramp is
+/// offset by half a sample so neither end gets zero weight.
+#[cfg(target_os = "ios")]
+fn crossfade_append(into: &mut [Vec<f32>], next: Vec<Vec<f32>>, shared: usize) {
+    let available = into
+        .first()
+        .map_or(0, Vec::len)
+        .min(next.first().map_or(0, Vec::len));
+    let shared = shared.min(available);
+    if shared > 0 {
+        let len = into[0].len();
+        for (c, channel) in into.iter_mut().enumerate() {
+            for i in 0..shared {
+                let t = (i as f32 + 0.5) / shared as f32;
+                let tail = len - shared + i;
+                channel[tail] = channel[tail] * (1.0 - t) + next[c][i] * t;
+            }
+        }
+    }
+    for (c, channel) in into.iter_mut().enumerate() {
+        channel.extend_from_slice(&next[c][shared..]);
     }
 }

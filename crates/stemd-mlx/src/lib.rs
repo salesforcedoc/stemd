@@ -14,6 +14,7 @@ pub mod memory;
 pub mod precision;
 pub mod roformer;
 pub mod spectral;
+pub mod trace;
 pub mod transformer;
 pub mod weights;
 

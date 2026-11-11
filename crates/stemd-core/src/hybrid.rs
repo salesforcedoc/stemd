@@ -322,7 +322,7 @@ impl Separate for HybridSeparator {
                 },
             )?;
             self.to_planes(
-                &out.index((0, half.source)),
+                &out[half.source as usize].index(0),
                 half.normalised.then_some(&norm),
                 frames,
             )

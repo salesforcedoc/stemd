@@ -100,8 +100,28 @@ async fn record_request(
         return next.run(request).await;
     }
     let method = request.method().as_str().to_owned();
+    // A POST is where the body is read, and where a phone can run out of
+    // memory before the handler ever sees it. Note both sides of that read:
+    // the last line in the file names the phase that died.
+    let upload = method == "POST" && path.starts_with("/v1/jobs");
+    if upload {
+        let length = request
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("?");
+        state.jobs.note(&format!(
+            "POST {path} content-length={length} (headers read)"
+        ));
+    }
     let began = Instant::now();
     let response = next.run(request).await;
+    if upload {
+        state.jobs.note(&format!(
+            "POST {path} -> {} (body consumed)",
+            response.status().as_u16()
+        ));
+    }
     state.requests.record(
         &method,
         &path,
@@ -161,6 +181,12 @@ async fn health(AxumState(state): AxumState<AppState>) -> Json<serde_json::Value
         "max_track_secs": state.jobs.max_track_secs(),
         "jobs": state.jobs.count(),
         "token_required": !state.open.load(Ordering::Relaxed),
+        // What the system says is left before it kills the app, and what MLX
+        // is holding. Both are for the debug screen and the memory trace; a
+        // client has no use for them.
+        "available_memory": crate::jobs::available_memory(),
+        "mlx_cached": stemd_core::memory::cached(),
+        "mlx_limit": stemd_core::memory::limit(),
     }))
 }
 

@@ -399,12 +399,12 @@ fn a_short_track_survives_the_crossfade() {
         .expect("forward")
         .index((.., .., left..left + length));
 
-    let got = stemd_mlx::apply::over_track(&model, &audio, 0.25, &mut |_, _| Ok(()))
-        .expect("over_track")
-        .index((.., 0, .., ..));
+    let out = stemd_mlx::apply::over_track(&model, &audio, 0.25, &mut |_, _| Ok(()))
+        .expect("over_track");
+    let got = &out[0];
 
     assert_eq!(got.shape(), want.shape(), "shape differs");
-    let null = null_db(&got, &want);
+    let null = null_db(got, &want);
     println!("short track: {null:.1} dB");
     assert!(null < -100.0, "the crossfade changed it by {null:.1} dB");
 }

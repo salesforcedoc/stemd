@@ -135,7 +135,9 @@ fn a_whole_track_through_the_segmenting() {
         Ok(())
     })
     .expect("separating");
-    mlx_rs::transforms::eval([&out]).expect("evaluating");
+    for array in &out {
+        mlx_rs::transforms::eval([array]).expect("evaluating");
+    }
     let elapsed = started.elapsed().as_secs_f64();
 
     println!(

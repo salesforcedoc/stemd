@@ -26,6 +26,6 @@ pub use resample::{DspMode, OutputRate};
 /// Re-exported so a caller can name a precision without depending on
 /// `stemd-mlx`. stemd-server does exactly that: it has to put the precision in
 /// its cache key and never links the model crate.
-pub use stemd_mlx::{Accelerator, Family, Precision, memory};
+pub use stemd_mlx::{Accelerator, Family, Precision, memory, trace};
 pub use stemfmt::{StemFormat, encode as encode_stem};
 pub use stems::{DERIVED, PARTS, PartGains, SHIPPED, Stems};

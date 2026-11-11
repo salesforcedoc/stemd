@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Metal)
+import Metal
+#endif
 
 /// The process-wide server. Swift owns the lifecycle; Rust owns everything from
 /// the listener down.
@@ -24,6 +27,25 @@ final class StemdServer {
         )
         let data = support.appendingPathComponent("stemd", isDirectory: true)
         try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+
+        // The Metal device's real limits, for diagnosing a separation that dies
+        // on a long track. A single array larger than maxBufferLength cannot be
+        // allocated no matter how much system memory is free.
+#if canImport(Metal)
+        if let gpu = MTLCreateSystemDefaultDevice() {
+            let text = """
+            name=\(gpu.name)
+            maxBufferLength=\(gpu.maxBufferLength)
+            recommendedMaxWorkingSetSize=\(gpu.recommendedMaxWorkingSetSize)
+            hasUnifiedMemory=\(gpu.hasUnifiedMemory)
+            """
+            try? text.write(
+                to: data.appendingPathComponent("debug-gpu.txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+#endif
 
         var config: [String: Any] = [
             "data_dir": data.path,

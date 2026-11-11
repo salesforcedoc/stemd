@@ -47,13 +47,16 @@ impl Chunked for HtDemucs {
 
 /// One model over a whole track, chunk by chunk, crossfaded back together.
 ///
-/// `mix` is `[B, C, T]`, the result `[B, sources, C, T]`.
+/// `mix` is `[B, C, T]`. One `[B, C, T]` array is returned per model source,
+/// rather than one `[B, sources, C, T]` array: on an iOS device a single array
+/// long enough to hold four stems of an eight-minute track is what took the
+/// process down, while each source on its own is no larger than the input.
 pub fn over_track(
     model: &dyn Chunked,
     mix: &Array,
     overlap: f32,
     progress: &mut impl FnMut(usize, usize) -> Result<()>,
-) -> Result<Array> {
+) -> Result<Vec<Array>> {
     let shape = mix.shape().to_vec();
     let (batch, channels, length) = (shape[0], shape[1], shape[2]);
     let sources = model.sources();
@@ -64,12 +67,22 @@ pub fn over_track(
     }
 
     let weight = transition_weight(segment)?;
-    let mut out = ops::zeros::<f32>(&[batch, sources, channels, length])?;
+    crate::trace::note("ot: weights built");
+    let mut out = Vec::with_capacity(sources as usize);
+    for _ in 0..sources {
+        out.push(ops::zeros::<f32>(&[batch, channels, length])?);
+    }
+    crate::trace::note("ot: output allocated");
     let mut sum_weight = ops::zeros::<f32>(&[length])?;
+    crate::trace::note("ot: weight sum allocated");
 
     let offsets: Vec<i32> = (0..length).step_by(stride as usize).collect();
+    crate::trace::note(&format!("ot: {} segments", offsets.len()));
     for (done, &offset) in offsets.iter().enumerate() {
         progress(done, offsets.len())?;
+        if done < 3 || done % 16 == 0 {
+            crate::trace::note(&format!("ot: segment {done}/{} begin", offsets.len()));
+        }
 
         // A short final chunk is not zero-padded on the right. The window
         // is centred on it and real audio pulled in from *before* the
@@ -95,25 +108,34 @@ pub fn over_track(
         };
 
         let separated = model.separate_chunk(&chunk)?;
+        if done < 3 {
+            crate::trace::note(&format!("ot: segment {done} separated"));
+        }
 
         // The window was centred on the chunk, so the output is centred
         // too: sample `delta / 2` is the one that belongs at `offset`.
         // Taking from zero instead shifts the tail segment half the
         // shortfall early: inaudible on its own, and worth -4 dB.
         let trim = delta / 2;
-        let piece = separated.index((.., .., .., trim..trim + take));
-        let w = weight.index(0..take).reshape(&[1, 1, 1, take])?;
+        let w = weight.index(0..take).reshape(&[1, 1, take])?;
 
         //  Read the slice, add into it, write it back. Concatenating zero tensors either
         //  side would allocate two whole-track tensors per segment: on a six-minute track,
         //  sixty-eight rounds of half a gigabyte to place seven seconds of audio. The
         //  scatter-add spelling corrupts strided slices on the MLX this was built against.
+        //
+        //  Per source, not one [B,S,C,T] array: on a phone that single array is what
+        //  failed to materialise for an eight-minute track, while each source's own
+        //  [B,C,T] is the same size as the input that was already accepted.
         let end = offset + take;
-        let slice = out.index((.., .., .., offset..end));
-        out.try_index_mut(
-            (.., .., .., offset..end),
-            ops::add(&slice, &ops::multiply(&piece, &w)?)?,
-        )?;
+        for source in 0..sources {
+            let piece = separated.index((.., source, .., trim..trim + take));
+            let slice = out[source as usize].index((.., .., offset..end));
+            out[source as usize].try_index_mut(
+                (.., .., offset..end),
+                ops::add(&slice, &ops::multiply(&piece, &w)?)?,
+            )?;
+        }
         let covered = sum_weight.index(offset..end);
         sum_weight.try_index_mut(offset..end, ops::add(&covered, weight.index(0..take))?)?;
 
@@ -121,7 +143,13 @@ pub fn over_track(
         // expression and the memory it needs is every intermediate of the
         // whole track at once rather than one segment's. Three segments
         // would never show it; sixty-eight would.
-        mlx_rs::transforms::eval([&out, &sum_weight])?;
+        for array in &out {
+            mlx_rs::transforms::eval([array])?;
+        }
+        mlx_rs::transforms::eval([&sum_weight])?;
+        if done < 3 {
+            crate::trace::note(&format!("ot: segment {done} eval"));
+        }
     }
     progress(offsets.len(), offsets.len())?;
 
@@ -129,7 +157,12 @@ pub fn over_track(
     if smallest <= 0.0 {
         bail!("some samples were covered by no segment; overlap {overlap} is too small");
     }
-    Ok(ops::divide(&out, &sum_weight)?)
+    let sum_weight = sum_weight.reshape(&[1, 1, length])?;
+    let mut normalized = Vec::with_capacity(out.len());
+    for array in out {
+        normalized.push(ops::divide(&array, &sum_weight)?);
+    }
+    Ok(normalized)
 }
 
 /// A triangular crossfade over one segment, peaking in the middle.
@@ -240,6 +273,7 @@ mod tests {
 
         assert_eq!(last.0, last.1, "the final report is not the total");
         assert_eq!(model.runs.get(), last.1, "a chunk went unreported");
-        assert_eq!(out.shape(), [1, 1, 2, 20_000]);
+        assert_eq!(out.len(), 1, "Counting has one source");
+        assert_eq!(out[0].shape(), [1, 2, 20_000]);
     }
 }

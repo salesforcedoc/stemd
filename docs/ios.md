@@ -284,9 +284,20 @@ Device builds keep the Metal backend.
   files are elsewhere and stay.
 - **Foreground only.** iOS suspends the process; a separation and a shared stem
   URL both end when the app leaves the foreground. The UI has to say so.
-- **Memory.** The pipeline holds the decoded track and two stem accumulators as
-  f32. The 15-minute default is a guard, not a measurement; the first device run
-  should set it from real peak RSS.
+- **Long tracks are separated in two-minute windows.** On the device the whole
+  track is never one array: it is cut into 120-second windows with a two-second
+  crossfade at each seam. This is a memory decision, not a quality one — the
+  frame count and the stems are unchanged. An eight-minute track's whole-track
+  arrays are what killed the app; a window is a size the device has always
+  handled. The same reason caps MLX's allocator cache at 1 GiB and clears it
+  after every window: its default is the GPU's recommended working set (over
+  7 GB here), which is more than the app is allowed to hold.
+- **Memory.** The pipeline holds the decoded track and the stem accumulators as
+  f32. On an 8 GB iPad a two-minute window peaks around 2.5 GB of MLX memory
+  and releases to zero between windows. `/v1/health` reports
+  `available_memory`, `mlx_cached` and `mlx_limit`; each job also appends a
+  flushed phase trace to `data_dir/jobs/debug-memory.log`, which is what to ask
+  for when a separation takes the process down without a crash report.
 - **No ANE.** MLX runs on the GPU. A Core ML conversion would be a different
   project and would have to reproduce every layer's checks.
 - **MP3 is not built.** The app depends on `stemd-core` with default features

@@ -38,6 +38,40 @@ pub fn peak() -> usize {
     bytes
 }
 
+/// The ceiling MLX enforces on its own allocations.
+///
+/// Exceeding it is fatal, not an error a separation can catch, which is why it
+/// matters on a phone: the default is derived from the device's working set,
+/// and one whole-track output tensor can cross it.
+pub fn limit() -> usize {
+    let mut bytes = 0;
+    // SAFETY: writes one `size_t` through a pointer to a live local.
+    unsafe { mlx_sys::mlx_get_memory_limit(&mut bytes) };
+    bytes
+}
+
+/// Raise or lower MLX's ceiling. Returns the previous limit.
+///
+/// `usize::MAX` means no limit of MLX's own; the process still has the system's.
+pub fn set_limit(bytes: usize) -> usize {
+    let mut previous = 0;
+    // SAFETY: as above; MLX returns the old value through the out pointer.
+    unsafe { mlx_sys::mlx_set_memory_limit(&mut previous, bytes) };
+    previous
+}
+
+/// Cap what MLX keeps for arrays it has already freed. Returns the old cap.
+///
+/// The default is the device's recommended working set, which on a phone is
+/// larger than the app is allowed to hold: one separation window fills it and
+/// the system kills the process before anything gets a chance to release it.
+pub fn set_cache_limit(bytes: usize) -> usize {
+    let mut previous = 0;
+    // SAFETY: as above.
+    unsafe { mlx_sys::mlx_set_cache_limit(&mut previous, bytes) };
+    previous
+}
+
 /// Give back everything MLX is holding for arrays that are gone, and report how
 /// much that was. Nothing live is touched, so a loaded model stays loaded.
 pub fn release() -> usize {

@@ -73,6 +73,54 @@ fn normalise_source_hash(value: Option<&str>) -> Option<String> {
     Some(value.to_ascii_lowercase())
 }
 
+/// Bytes the system says this process may still allocate before it is killed.
+///
+/// iOS 13 and later. Zero when the question does not apply (tests, macOS
+/// tooling), which reads as "unknown" in the trace.
+#[cfg(target_os = "ios")]
+pub(crate) fn available_memory() -> usize {
+    // SAFETY: the API has no arguments and no failure mode beyond returning 0
+    // on a system that predates it.
+    unsafe extern "C" {
+        fn os_proc_available_memory() -> usize;
+    }
+    unsafe { os_proc_available_memory() }
+}
+
+#[cfg(not(target_os = "ios"))]
+pub(crate) fn available_memory() -> usize {
+    0
+}
+
+/// Append one line about memory to `debug-memory.log` beside the jobs.
+///
+/// Written on demand and flushed, because the process it is meant to describe
+/// is the one the system is about to kill. Kept in the jobs root so it can be
+/// pulled off the device with the container.
+pub(crate) fn note(root: &Path, label: &str) {
+    use std::io::Write;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let line = format!(
+        "{now:.3} {label} avail={} active={} cached={} peak={}\n",
+        available_memory(),
+        stemd_core::memory::active(),
+        stemd_core::memory::cached(),
+        stemd_core::memory::peak(),
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("debug-memory.log"))
+    {
+        let _ = file.write_all(line.as_bytes());
+        let _ = file.sync_data();
+    }
+}
+
 pub struct Options {
     /// The jobs root; each job gets `<root>/<id>/`.
     pub root: PathBuf,
@@ -208,6 +256,9 @@ impl Jobs {
         let incoming = options.root.join("incoming");
         std::fs::create_dir_all(&incoming)
             .with_context(|| format!("creating {}", incoming.display()))?;
+        // The separation path's own trace, for the failures that take the
+        // process down before it can log anywhere else.
+        stemd_core::trace::set(options.root.join("debug-memory.log"));
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -268,6 +319,11 @@ impl Jobs {
 
     pub fn count(&self) -> usize {
         self.jobs.lock().len()
+    }
+
+    /// Write one memory-trace line for this server's jobs root.
+    pub fn note(&self, label: &str) {
+        note(&self.root, label);
     }
 
     /// Queue an encoded audio file.
@@ -892,7 +948,16 @@ fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
             work.job.release_source();
             continue;
         }
+        let root = work.job.dir.parent().map(Path::to_path_buf).unwrap_or_default();
+        note(&root, &format!("worker start {}", work.job.id));
         if separator.is_none() {
+            // MLX's default cache cap is the device's recommended working set,
+            // over 7 GB here and more than this app may hold. One separation
+            // window fills it in seconds and the process is killed before the
+            // between-window release can run. A gigabyte leaves the allocator
+            // enough to reuse without letting it become the largest object in
+            // the process; the model's live arrays are not affected.
+            stemd_core::memory::set_cache_limit(1 << 30);
             match separator::load(&config.models_dir, config.preset) {
                 Ok(loaded) => separator = Some(loaded),
                 Err(err) => {
@@ -925,6 +990,7 @@ fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
                 work.job.id
             );
         }
+        note(&root, &format!("cache released freed={freed}"));
     }
 }
 
@@ -963,6 +1029,10 @@ fn separate_one(
         ),
         Source::None => bail!("a job loaded from disk has no audio to separate"),
     };
+    note(
+        job.dir.parent().unwrap_or(Path::new(".")),
+        &format!("mix built {}", job.id),
+    );
 
     let secs = audio.duration_secs();
     if secs > max_track_secs {
@@ -992,6 +1062,10 @@ fn separate_one(
     let began = Instant::now();
     let stems = separator.separate(&mix, &sink)?;
     let elapsed = began.elapsed().as_secs_f64();
+    note(
+        job.dir.parent().unwrap_or(Path::new(".")),
+        &format!("separated {}", job.id),
+    );
 
     job.set(State::Running {
         progress: Progress::new(Stage::Writing),

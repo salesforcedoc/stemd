@@ -49,13 +49,17 @@ fn a_short_track_is_centred_in_its_window() {
     let got = over_track(&direct, &input, DEFAULT_OVERLAP, &mut |_, _| Ok(()))
         .expect("through the segmenting path");
 
-    assert_eq!(got.shape(), want.shape(), "shape differs");
-    let null = null_db(&got, &want);
-    println!("short-track null: {null:.1} dB");
-    assert!(
-        null < -100.0,
-        "segmenting differs from the centred window by {null:.1} dB"
-    );
+    assert_eq!(got.len(), want.shape()[1] as usize, "source count differs");
+    for (source, got) in got.iter().enumerate() {
+        let want = want.index((.., source as i32, .., ..));
+        assert_eq!(got.shape(), want.shape(), "shape differs");
+        let null = null_db(got, &want);
+        println!("short-track source {source} null: {null:.1} dB");
+        assert!(
+            null < -100.0,
+            "segmenting differs from the centred window by {null:.1} dB"
+        );
+    }
 }
 
 /// A track padded out to a full window, plus where the real audio starts in it.
@@ -178,9 +182,13 @@ fn a_whole_track_matches_the_reference() {
     .expect("separating the track");
 
     let want = load("apply_output");
-    assert_eq!(got.shape(), want.shape(), "shape differs");
-    let null = null_db(&got, &want);
-    println!("whole track null: {null:.1} dB");
-    assert!(null < -60.0, "the track nulls at only {null:.1} dB");
-    let _ = ops::abs(&got);
+    assert_eq!(got.len(), want.shape()[1] as usize, "source count differs");
+    for (source, got) in got.iter().enumerate() {
+        let want = want.index((.., source as i32, .., ..));
+        assert_eq!(got.shape(), want.shape(), "shape differs");
+        let null = null_db(got, &want);
+        println!("whole track source {source} null: {null:.1} dB");
+        assert!(null < -60.0, "the track nulls at only {null:.1} dB");
+    }
+    let _ = ops::abs(&got[0]);
 }
