@@ -92,6 +92,22 @@ pub(crate) fn available_memory() -> usize {
     0
 }
 
+/// Modification time of the running app executable, in Unix seconds.
+///
+/// The closest thing to a build stamp the bundle has: it moves when the app is
+/// linked and installed. Reported in `/v1/health` so an install can be
+/// identified from another machine, and shown in the app's Debug screen from
+/// the bundle itself.
+pub(crate) fn app_binary_unix() -> u64 {
+    std::env::current_exe()
+        .and_then(|path| std::fs::metadata(path))
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|age| age.as_secs())
+        .unwrap_or(0)
+}
+
 /// Append one line about memory to `debug-memory.log` beside the jobs.
 ///
 /// Written on demand and flushed, because the process it is meant to describe

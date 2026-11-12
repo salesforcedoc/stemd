@@ -187,6 +187,7 @@ async fn health(AxumState(state): AxumState<AppState>) -> Json<serde_json::Value
         "available_memory": crate::jobs::available_memory(),
         "mlx_cached": stemd_core::memory::cached(),
         "mlx_limit": stemd_core::memory::limit(),
+        "app_binary_unix": crate::jobs::app_binary_unix(),
     }))
 }
 

@@ -28,6 +28,13 @@ needs when `xcode-select` points at Command Line Tools.
 A post-build phase copies `mlx.metallib` into the app bundle. Without it the
 app links and launches, then fails the first time MLX touches the GPU.
 
+When installing an update over an existing app, use a clean build
+(`xcodebuild … clean build`). An incremental build has been seen to report
+`BUILD SUCCEEDED` while reusing the previous executable after Swift edits; a
+clean build guarantees the bundle matches the source. The Debug screen's
+**Build** section shows the installed executable's date and the Rust server
+version, and `/v1/health` reports the same date as `app_binary_unix`.
+
 ## First run
 
 1. The app starts the server and shows **Model files → Download model files**.

@@ -28,6 +28,16 @@ struct DebugView: View {
 
     var body: some View {
         List {
+            Section("Build") {
+                LabeledContent("App", value: BuildInfo.version)
+                LabeledContent("Binary", value: BuildInfo.binaryDateText)
+                if let health = model.health {
+                    LabeledContent("Server", value: health.version)
+                }
+                Text("The binary date is the app executable on this device; it changes when a new build is installed. Server is the version of the Rust library behind the listener.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Section("Server") {
                 LabeledContent("Port", value: "\(StemdServer.shared.port)")
                 if let base = StemdServer.shared.shareBase() {
@@ -202,5 +212,34 @@ private struct CallRow: View {
         if (200..<300).contains(status) { return .green }
         if status == 401 { return .orange }
         return .red
+    }
+}
+
+/// What the installed bundle is, for the Debug screen.
+///
+/// The executable's date is the closest thing to a build stamp without a
+/// generated source file: it is written when the app is linked (and again if
+/// the installer rewrites it), so it changes when a new build reaches the
+/// device. The server's own version comes from the Rust library and is shown
+/// beside it.
+enum BuildInfo {
+    static var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(short) (\(build))"
+    }
+
+    static var binaryDateText: String {
+        guard
+            let url = Bundle.main.executableURL,
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+            let date = attributes[.modificationDate] as? Date
+        else {
+            return "unknown"
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
     }
 }

@@ -239,6 +239,7 @@ struct StemdClient {
             let error: String?
         }
 
+        let version: String
         let preset: String
         let maxTrackSecs: Double
         let jobs: Int
@@ -246,7 +247,7 @@ struct StemdClient {
         let tokenRequired: Bool
 
         enum CodingKeys: String, CodingKey {
-            case preset, jobs, models
+            case version, preset, jobs, models
             case maxTrackSecs = "max_track_secs"
             case tokenRequired = "token_required"
         }
