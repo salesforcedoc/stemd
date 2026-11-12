@@ -1070,7 +1070,15 @@ fn separate_one(
     job.set(State::Running {
         progress: Progress::new(Stage::Writing),
     });
+    note(
+        job.dir.parent().unwrap_or(Path::new(".")),
+        &format!("writing {}", job.id),
+    );
     let written = write_stems(job, &mix, &stems, format)?;
+    note(
+        job.dir.parent().unwrap_or(Path::new(".")),
+        &format!("written {}", job.id),
+    );
     write_detail(job, &mix, &stems, &written, format, elapsed)?;
     *job.stems.lock() = written;
     *job.result.lock() = Some(Geometry {
@@ -1099,14 +1107,24 @@ fn separate_one(
 
 fn write_stems(job: &Job, mix: &Audio, stems: &Stems, format: StemFormat) -> Result<Vec<Stem>> {
     let mut written = Vec::new();
-    for (name, audio) in &stems.shipped {
+    // The derived part is one more file. Counting them makes "writing" a stage
+    // with movement: encoding a full-length track takes long enough that a bar
+    // frozen at its stage floor reads as a hang.
+    let total = (stems.shipped.len() + 1) as u32;
+    for (done, (name, audio)) in stems.shipped.iter().enumerate() {
         written.push(write_stem(&job.dir, name, audio, format)?);
+        job.set(State::Running {
+            progress: Progress::counted(Stage::Writing, done as u32 + 1, total),
+        });
     }
     // A folder of stems has no context to rebuild the third part from, which
     // is why the desktop's drop path writes it too. A file served to another
     // device is the same situation.
     let derived = stems.derived_part(mix);
     written.push(write_stem(&job.dir, "drums", &derived, format)?);
+    job.set(State::Running {
+        progress: Progress::counted(Stage::Writing, total, total),
+    });
     Ok(written)
 }
 
