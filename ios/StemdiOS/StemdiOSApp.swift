@@ -36,6 +36,13 @@ final class AppModel: ObservableObject {
 
     private static let keepAwakeKey = "stemd.keepAwake"
 
+    /// True when the Rust listener is not answering while the app is in front.
+    /// The cache list is still valid; this only says the server needs bringing
+    /// back.
+    @Published var serverDown = false
+    private var pollFailures = 0
+    private var restarting = false
+
     /// Shared with the debug screen; every request the app makes is recorded
     /// here, including the one-second polls.
     let apiLog = APILog()
@@ -47,29 +54,41 @@ final class AppModel: ObservableObject {
         guard client == nil else { return }
         do {
             try StemdServer.shared.start()
-            client = StemdClient(
-                base: StemdServer.shared.loopback(),
-                token: StemdServer.shared.token,
-                log: apiLog
-            )
-            tokenRequired = StemdServer.shared.tokenRequired
+            makeClient()
+            startPolling()
             await refresh()
-            polling = Task { [weak self] in
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(1))
-                    await self?.refresh()
-                }
-            }
         } catch {
             self.error = error.localizedDescription
+            serverDown = true
         }
         starting = false
     }
 
     func stop() {
         polling?.cancel()
+        polling = nil
         StemdServer.shared.stop()
         client = nil
+        serverDown = false
+    }
+
+    private func makeClient() {
+        client = StemdClient(
+            base: StemdServer.shared.loopback(),
+            token: StemdServer.shared.token,
+            log: apiLog
+        )
+        tokenRequired = StemdServer.shared.tokenRequired
+    }
+
+    private func startPolling() {
+        polling?.cancel()
+        polling = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                await self?.refresh()
+            }
+        }
     }
 
     func refresh() async {
@@ -79,9 +98,18 @@ final class AppModel: ObservableObject {
             async let jobs = client.jobs()
             self.health = try await health
             self.jobs = try await jobs
+            serverDown = false
+            pollFailures = 0
         } catch {
-            // A poll failure is usually the app going to the background. Only
-            // make noise when there is nothing on screen to explain it.
+            pollFailures += 1
+            // A failure in the background is the suspension itself, not a broken
+            // server. Only a foreground app can tell the difference, and only it
+            // can do anything about it.
+            if UIApplication.shared.applicationState == .active, pollFailures >= 3 {
+                serverDown = true
+                self.health = nil
+            }
+            // Make noise only when there is nothing on screen to explain it.
             if self.jobs.isEmpty { self.error = error.localizedDescription }
         }
         let working = jobs.contains { $0.state == "queued" || $0.state == "running" }
@@ -100,12 +128,57 @@ final class AppModel: ObservableObject {
         refreshSoon()
     }
 
-    /// Back in the foreground: a suspended app's Bonjour record may have been
-    /// withdrawn, and the server's client should be able to find it again
-    /// without a relaunch.
+    /// Back in the foreground. If the process was only suspended, the listener
+    /// survived; prove it with a loopback probe, then re-register Bonjour. If
+    /// it is gone, rebind it.
     func foregrounded() {
+        Task { await ensureServer() }
+    }
+
+    private func ensureServer() async {
+        // The first appearance runs `start()`; this hook must not race it.
+        guard !starting, !restarting, let client else { return }
+        if (try? await client.health()) != nil {
+            serverDown = false
+            pollFailures = 0
+            StemdServer.shared.republish()
+            await refresh()
+            return
+        }
+        await restartServer()
+    }
+
+    /// Rebind the listener and republish it.
+    ///
+    /// Called when the app returns to the front and the probe failed, and from
+    /// the Server section. The fixed port can stay reserved for a moment after
+    /// a stop, so a failed bind is retried once.
+    func restartServer() async {
+        guard !restarting else { return }
+        restarting = true
+        defer { restarting = false }
+        serverDown = true
+        polling?.cancel()
+        polling = nil
+        StemdServer.shared.stop()
+        client = nil
+        do {
+            try StemdServer.shared.start()
+        } catch {
+            try? await Task.sleep(for: .milliseconds(800))
+            do {
+                try StemdServer.shared.start()
+            } catch {
+                self.error = "The server could not restart: \(error.localizedDescription)"
+                return
+            }
+        }
+        makeClient()
         StemdServer.shared.republish()
-        Task { await refresh() }
+        serverDown = false
+        pollFailures = 0
+        startPolling()
+        await refresh()
     }
 
     private func refreshSoon() {
@@ -260,7 +333,7 @@ struct ContentView: View {
         Section("Server") {
             if model.starting {
                 ProgressView("Starting")
-            } else if let health = model.health {
+            } else if let health = model.health, !model.serverDown {
                 LabeledContent("Model", value: health.preset.capitalized)
                 LabeledContent("Jobs", value: "\(health.jobs)")
                 if health.tokenRequired {
@@ -293,8 +366,16 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {
-                Text("The server is not running.")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("The server is not running", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text("A deck cannot reach it until it is back. If the app was closed, opening it starts the server again; if it is in front and not answering, restart it here.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Restart the server") {
+                        Task { await model.restartServer() }
+                    }
+                }
             }
         }
     }

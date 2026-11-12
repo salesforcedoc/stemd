@@ -287,7 +287,11 @@ Device builds keep the Metal backend.
   general-purpose server: the audio and VoIP modes exist for audio and calls,
   and abusing them is a review rejection and a battery problem. The app offers
   **Keep screen awake** (on by default) so an auto-lock does not suspend it, and
-  republishes Bonjour when it returns to the front. For an always-on server, run
+  republishes Bonjour when it returns to the front. Returning to the front also
+  probes the listener on loopback: if the process was only suspended it is still
+  there, and if it is not, the app rebinds it. Three failed health polls while
+  the app is in front replace the Server section with **The server is not
+  running** and a **Restart the server** button. For an always-on server, run
   the desktop build on a machine that stays awake, or keep the iPad in Guided
   Access with **Auto-Lock → Never**.
 - **Long tracks are separated in two-minute windows.** On the device the whole
