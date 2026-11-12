@@ -117,6 +117,16 @@ final class StemdServer {
         token = ""
     }
 
+    /// Re-register the Bonjour record.
+    ///
+    /// A suspended app's advertisement can be withdrawn or expire; coming back
+    /// to the foreground should make the server findable again without a
+    /// relaunch. The Rust listener itself survived the suspension.
+    func republish() {
+        guard port != 0 else { return }
+        bonjour.start(port: port)
+    }
+
     private static let tokenPreferenceKey = "stemd.requireToken"
 
     /// Switch the token requirement at runtime, for clients (the CDJ sidecar)

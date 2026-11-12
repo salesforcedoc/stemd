@@ -25,6 +25,16 @@ final class AppModel: ObservableObject {
     @Published var starting = true
     /// Mirrors the Rust-side switch so the debug screen can bind to it.
     @Published var tokenRequired = true
+    /// Stop the display sleeping while the app is in front. An auto-lock would
+    /// suspend the process and take the server with it, which is the one part of
+    /// "background" this app can control.
+    @Published var keepAwake: Bool
+
+    init() {
+        keepAwake = UserDefaults.standard.object(forKey: Self.keepAwakeKey) as? Bool ?? true
+    }
+
+    private static let keepAwakeKey = "stemd.keepAwake"
 
     /// Shared with the debug screen; every request the app makes is recorded
     /// here, including the one-second polls.
@@ -75,8 +85,31 @@ final class AppModel: ObservableObject {
             if self.jobs.isEmpty { self.error = error.localizedDescription }
         }
         let working = jobs.contains { $0.state == "queued" || $0.state == "running" }
-        UIApplication.shared.isIdleTimerDisabled =
-            working || (self.health?.models.downloading ?? false)
+        updateIdleTimer(working: working || (self.health?.models.downloading ?? false))
+    }
+
+    /// The app cannot run in the background; the least it can do is not let the
+    /// display lock while it is the foreground app.
+    private func updateIdleTimer(working: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = keepAwake || working
+    }
+
+    func setKeepAwake(_ awake: Bool) {
+        keepAwake = awake
+        UserDefaults.standard.set(awake, forKey: Self.keepAwakeKey)
+        refreshSoon()
+    }
+
+    /// Back in the foreground: a suspended app's Bonjour record may have been
+    /// withdrawn, and the server's client should be able to find it again
+    /// without a relaunch.
+    func foregrounded() {
+        StemdServer.shared.republish()
+        Task { await refresh() }
+    }
+
+    private func refreshSoon() {
+        Task { await refresh() }
     }
 
     func downloadModels() async {
@@ -145,6 +178,7 @@ final class AppModel: ObservableObject {
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var importing = false
     @State private var confirmingClear = false
     /// Open the debug screen directly when launched with `--debug`, so it can
@@ -217,6 +251,9 @@ struct ContentView: View {
             }
         }
         .task { await model.start() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { model.foregrounded() }
+        }
     }
 
     private var serverSection: some View {
@@ -248,6 +285,13 @@ struct ContentView: View {
                         .font(.footnote)
                         .textSelection(.enabled)
                 }
+                Toggle("Keep screen awake", isOn: Binding(
+                    get: { model.keepAwake },
+                    set: { model.setKeepAwake($0) }
+                ))
+                Text("The server runs only while this app is in front. Keeping the display awake stops an auto-lock from suspending it; Guided Access keeps the app in front.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } else {
                 Text("The server is not running.")
                     .foregroundStyle(.secondary)

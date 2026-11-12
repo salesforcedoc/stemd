@@ -282,8 +282,14 @@ Device builds keep the Metal backend.
   `DELETE /v1/jobs/{id}/cache`) deletes one entry, and the toolbar **trash**
   (or `DELETE /v1/jobs`) deletes every separation and frees the space. Model
   files are elsewhere and stay.
-- **Foreground only.** iOS suspends the process; a separation and a shared stem
-  URL both end when the app leaves the foreground. The UI has to say so.
+- **Foreground only.** iOS suspends the process when the app leaves the front,
+  and the listener goes with it. There is no background mode for a
+  general-purpose server: the audio and VoIP modes exist for audio and calls,
+  and abusing them is a review rejection and a battery problem. The app offers
+  **Keep screen awake** (on by default) so an auto-lock does not suspend it, and
+  republishes Bonjour when it returns to the front. For an always-on server, run
+  the desktop build on a machine that stays awake, or keep the iPad in Guided
+  Access with **Auto-Lock → Never**.
 - **Long tracks are separated in two-minute windows.** On the device the whole
   track is never one array: it is cut into 120-second windows with a two-second
   crossfade at each seam. This is a memory decision, not a quality one — the

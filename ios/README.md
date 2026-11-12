@@ -40,8 +40,11 @@ app links and launches, then fails the first time MLX touches the GPU.
    network. The app shows that address in the Server section.
 
 iOS suspends the app — and with it the server and any running separation — as
-soon as it leaves the foreground. The app holds the idle timer off while work is
-in progress, but it cannot run in the background.
+soon as it leaves the foreground or the display locks. There is no background
+mode for a listener; the app stops the display sleeping while it is in front
+(**Keep screen awake**, on by default), and republishes its Bonjour record when
+it comes back. An always-on server belongs on the desktop build, or on an iPad
+kept in Guided Access with **Auto-Lock → Never**.
 
 ## Limitations
 
