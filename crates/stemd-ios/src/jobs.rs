@@ -229,6 +229,7 @@ fn load_existing(root: &Path) -> (HashMap<String, Arc<Job>>, u64) {
         let job = Arc::new(Job {
             id: id.clone(),
             key: detail.key,
+            model_id: detail.model_id,
             source_hash: Mutex::new(detail.source_hash),
             created,
             title: detail.title,
@@ -322,7 +323,13 @@ impl Jobs {
     /// two presets' stems apart. The `-ios` suffix keeps it from colliding with
     /// a desktop cache entry of the same artefact.
     pub fn model_id(&self) -> String {
-        format!("{}-ios", self.preset.artefact())
+        // Precision changes the audio, so it is part of the identity a client
+        // caches on, exactly as it is on the desktop.
+        format!(
+            "{}-ios-{}",
+            self.preset.artefact(),
+            separator::precision_key(self.preset)
+        )
     }
 
     pub fn token(&self) -> &str {
@@ -511,6 +518,7 @@ impl Jobs {
         let job = Arc::new(Job {
             id: id.clone(),
             key,
+            model_id: self.model_id(),
             source_hash: Mutex::new(source_hash),
             created: seq,
             title,
@@ -659,11 +667,13 @@ impl Jobs {
         if source_hash.is_empty() {
             return None;
         }
+        let model = self.model_id();
         self.jobs
             .lock()
             .values()
             .find(|job| {
-                *job.source_hash.lock() == source_hash
+                job.model_id == model
+                    && *job.source_hash.lock() == source_hash
                     && !matches!(
                         &*job.state.lock(),
                         State::Failed { .. } | State::Cancelled
@@ -819,6 +829,11 @@ struct Job {
     /// Content key: the uploaded audio plus everything that changes the
     /// output. Two submissions with the same key are the same separation.
     key: String,
+    /// The model identity this job was produced with, including precision.
+    /// Part of a source-hash match as well as the key: stems from another
+    /// precision are a different result, and must not answer a preflight for
+    /// the current one.
+    model_id: String,
     /// Client-supplied identity of the source file. Empty when the client did
     /// not provide one; it lets a preflight find a separation before uploading.
     /// Behind a lock because a job that already exists is tagged the first time
@@ -1176,6 +1191,9 @@ struct Detail {
     /// Source-file identity, absent on entries written before preflight.
     #[serde(default)]
     source_hash: String,
+    /// Model identity, absent on entries written before precision joined it.
+    #[serde(default)]
+    model_id: String,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -1217,6 +1235,7 @@ fn write_detail(
     let detail = Detail {
         key: job.key.clone(),
         source_hash: job.source_hash.lock().clone(),
+        model_id: job.model_id.clone(),
         title: job.title.clone(),
         artist: job.artist.clone(),
         album: job.album.clone(),
@@ -1320,6 +1339,7 @@ mod tests {
         let detail = Detail {
             key: "key".to_owned(),
             source_hash: String::new(),
+            model_id: String::new(),
             title: Some("Reloaded".to_owned()),
             artist: Some("Artist".to_owned()),
             album: None,
@@ -1388,6 +1408,12 @@ mod tests {
         Detail {
             key: key.to_owned(),
             source_hash: String::new(),
+            // What a job of this preset would carry on the machine running the
+            // tests, so a source-hash lookup in these tests matches it.
+            model_id: format!(
+                "htdemucs-ios-{}",
+                crate::separator::precision_key(Preset::Fast)
+            ),
             title: Some(title.to_owned()),
             artist: None,
             album: None,
