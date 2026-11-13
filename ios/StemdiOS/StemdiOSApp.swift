@@ -254,6 +254,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var importing = false
     @State private var confirmingClear = false
+    @State private var copiedAddress = false
     /// Open the debug screen directly when launched with `--debug`, so it can
     /// be reached without tapping through the UI during a test.
     @State private var showDebug = ProcessInfo.processInfo.arguments.contains("--debug")
@@ -261,33 +262,14 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
+                consoleSection
                 serverSection
-                modelsSection
+                modelSection
                 jobsSection
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("stemd")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        showDebug = true
-                    } label: {
-                        Image(systemName: "ladybug")
-                    }
-                    Button {
-                        importing = true
-                    } label: {
-                        Label("Import a track", systemImage: "plus")
-                    }
-                    .disabled(model.health?.models.present != true)
-                    Button(role: .destructive) {
-                        confirmingClear = true
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .disabled(model.jobs.isEmpty)
-                    .accessibilityLabel("Clear the stem cache")
-                }
-            }
+            .toolbar { toolbar }
             .navigationDestination(isPresented: $showDebug) {
                 DebugView(log: model.apiLog)
             }
@@ -323,100 +305,454 @@ struct ContentView: View {
                 Text(model.error ?? "")
             }
         }
+        .tint(Theme.accent)
         .task { await model.start() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { model.foregrounded() }
         }
     }
 
-    private var serverSection: some View {
-        Section("Server") {
-            if model.starting {
-                ProgressView("Starting")
-            } else if let health = model.health, !model.serverDown {
-                LabeledContent("Model", value: health.preset.capitalized)
-                LabeledContent("Jobs", value: "\(health.jobs)")
-                if health.tokenRequired {
-                    // The one setting that decides whether any deck can use this
-                    // app at all. It used to be reachable only through the
-                    // debug screen, and a 401 mid-upload is hard to read.
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("A deck cannot connect while the token is required: its sidecar has no way to send one.")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                        Button("Allow decks (turn off the token)") {
-                            model.setTokenRequired(false)
-                        }
-                        .font(.footnote)
+    // MARK: - Console
+
+    private var consoleSection: some View {
+        Section {
+            ConsolePanel(
+                status: consoleStatus,
+                detail: consoleDetail,
+                address: StemdServer.shared.shareBase()?.absoluteString ?? "No network",
+                copied: copiedAddress,
+                copy: {
+                    guard let address = StemdServer.shared.shareBase()?.absoluteString else { return }
+                    UIPasteboard.general.string = address
+                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    copiedAddress = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        copiedAddress = false
                     }
                 }
-                if let base = StemdServer.shared.shareBase() {
-                    // The token is in every stem URL; this is the address to
-                    // type on the other device, and the app shows it rather
-                    // than pretending discovery exists.
-                    Text(base.absoluteString)
-                        .font(.footnote)
-                        .textSelection(.enabled)
+            )
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    private var consoleStatus: ServerState {
+        if model.starting { return .starting }
+        if model.serverDown || model.health == nil { return .offline }
+        return .online
+    }
+
+    private var consoleDetail: String {
+        guard let health = model.health, !model.serverDown else {
+            return model.starting ? "BOOTING" : "NO SERVER"
+        }
+        let precision = health.modelId.split(separator: "-").last.map(String.init)?.uppercased() ?? ""
+        return "\(precision) · \(health.preset.uppercased())"
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                importing = true
+            } label: {
+                Label("Import a track", systemImage: "plus")
+            }
+            .disabled(model.health?.models.present != true)
+            .accessibilityLabel("Import a track")
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button {
+                    showDebug = true
+                } label: {
+                    Label("Debug log", systemImage: "ladybug")
                 }
-                Toggle("Keep screen awake", isOn: Binding(
-                    get: { model.keepAwake },
-                    set: { model.setKeepAwake($0) }
-                ))
-                Text("The server runs only while this app is in front. Keeping the display awake stops an auto-lock from suspending it; Guided Access keeps the app in front.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("The server is not running", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                    Text("A deck cannot reach it until it is back. If the app was closed, opening it starts the server again; if it is in front and not answering, restart it here.")
+                Button(role: .destructive) {
+                    confirmingClear = true
+                } label: {
+                    Label("Clear stem cache", systemImage: "trash")
+                }
+                .disabled(model.jobs.isEmpty)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .accessibilityLabel("More")
+        }
+    }
+
+    // MARK: - Server
+
+    private var serverSection: some View {
+        Section {
+            if model.serverDown || (model.health == nil && !model.starting) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Server is not running", systemImage: "exclamationmark.triangle.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.red)
+                    Text("A deck cannot reach it. Open the app again, or restart the server here.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Button("Restart the server") {
+                    Button {
                         Task { await model.restartServer() }
+                    } label: {
+                        Label("Restart server", systemImage: "arrow.clockwise")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                 }
-            }
-        }
-    }
+                .padding(.vertical, 4)
+                .listRowBackground(Color.red.opacity(0.06))
+            } else if let health = model.health {
+                HStack(spacing: 12) {
+                    stat("\(health.jobs)", "Separations")
+                    Divider().frame(height: 28)
+                    stat(health.preset.capitalized, "Preset")
+                    Divider().frame(height: 28)
+                    stat(
+                        health.tokenRequired ? "Locked" : "Open",
+                        "Access",
+                        color: health.tokenRequired ? .orange : .green
+                    )
+                }
+                .padding(.vertical, 2)
 
-    private var modelsSection: some View {
-        Section("Model files") {
-            if let models = model.health?.models {
-                if models.downloading {
-                    ProgressView(
-                        value: models.total > 0 ? Double(models.done) / Double(models.total) : nil
-                    ) {
-                        Text(models.file ?? "Downloading")
+                LabeledContent {
+                    Toggle(
+                        "Keep screen awake",
+                        isOn: Binding(
+                            get: { model.keepAwake },
+                            set: { model.setKeepAwake($0) }
+                        )
+                    )
+                    .labelsHidden()
+                } label: {
+                    Label("Keep screen awake", systemImage: "sun.max")
+                }
+
+                if health.tokenRequired {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Decks cannot connect", systemImage: "lock.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        Text("The token is required, and the CDJ sidecar has no way to send one.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button {
+                            model.setTokenRequired(false)
+                        } label: {
+                            Label("Allow decks", systemImage: "lock.open.fill")
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
                     }
-                } else if models.present {
-                    Label("Installed", systemImage: "checkmark.circle")
-                } else {
-                    Button("Download model files") {
-                        Task { await model.downloadModels() }
-                    }
-                    if let error = models.error {
-                        Text(error).font(.footnote).foregroundStyle(.red)
-                    }
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.orange.opacity(0.07))
                 }
             } else {
-                Text("Waiting for the server.").foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Starting the server")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
+        } header: {
+            SectionLabel("Server")
+        } footer: {
+            Text("The server runs only while this app is in front. Keep the screen awake, or use Guided Access.")
         }
     }
 
-    private var jobsSection: some View {
-        Section("Stem cache") {
-            if model.jobs.isEmpty {
-                Text("Drop a track with the + button.")
+    private func stat(_ value: String, _ label: String, color: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(.title3, design: .monospaced).weight(.semibold))
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Text(label.uppercased())
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .tracking(0.8)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Model
+
+    private var modelSection: some View {
+        Section {
+            if let models = model.health?.models, let health = model.health {
+                if models.downloading {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Label("Downloading", systemImage: "arrow.down.circle")
+                                .font(.subheadline)
+                            Spacer()
+                            Text(downloadPercent(models))
+                                .font(.system(size: 12, design: .monospaced))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(models.file ?? "Preparing…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProgressView(
+                            value: models.total > 0
+                                ? Double(models.done) / Double(models.total)
+                                : nil
+                        )
+                        .tint(Theme.accent)
+                    }
+                    .padding(.vertical, 2)
+                } else if models.present {
+                    HStack(spacing: 10) {
+                        Label(health.preset.capitalized, systemImage: "shippingbox")
+                        Spacer()
+                        Text(health.modelId)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .accessibilityLabel("Model files installed")
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Model files missing", systemImage: "exclamationmark.triangle")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Download the preset's weights to start separating.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button {
+                            Task { await model.downloadModels() }
+                        } label: {
+                            Label("Download model files", systemImage: "arrow.down.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                        if let error = models.error {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            } else {
+                Text("Waiting for the server.")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
+            }
+        } header: {
+            SectionLabel("Model")
+        }
+    }
+
+    private func downloadPercent(_ models: StemdClient.Health.Models) -> String {
+        guard models.total > 0 else { return "" }
+        let percent = Double(models.done) / Double(models.total) * 100
+        return "\(Int(percent.rounded()))%"
+    }
+
+    // MARK: - Stems
+
+    private var jobsSection: some View {
+        Section {
+            if model.jobs.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 34, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(height: 46)
+                    Text("No separations")
+                        .font(.headline)
+                    Text("Import a track and it will be separated on this iPad. The result stays here until you remove it.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button {
+                        importing = true
+                    } label: {
+                        Label("Import a track", systemImage: "plus")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(Theme.accent, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.health?.models.present != true)
+                    .opacity(model.health?.models.present == true ? 1 : 0.45)
+                    .padding(.top, 2)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
             }
             ForEach(model.jobs) { job in
                 JobRow(job: job)
             }
+        } header: {
+            SectionLabel("Stems", count: model.jobs.count)
         }
     }
 }
+
+// MARK: - Console panel
+
+private enum ServerState {
+    case starting
+    case online
+    case offline
+}
+
+private enum Theme {
+    static let accent = Color(red: 1.0, green: 0.45, blue: 0.12)
+    static let panel = Color(red: 0.07, green: 0.075, blue: 0.09)
+}
+
+/// The one piece of the screen that is deliberately not a grouped-list row: a
+/// graphite instrument panel with a live waveform, like a piece of gear rather
+/// than a web card.
+private struct ConsolePanel: View {
+    let status: ServerState
+    let detail: String
+    let address: String
+    let copied: Bool
+    let copy: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("STATUS")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .tracking(1.6)
+                        .foregroundStyle(.white.opacity(0.42))
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 7, height: 7)
+                        Text(statusText)
+                            .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                            .tracking(0.8)
+                            .foregroundStyle(.white.opacity(0.94))
+                    }
+                }
+                Spacer()
+                Text(detail)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+
+            HStack(spacing: 10) {
+                Text(address)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Spacer(minLength: 4)
+                Button(action: copy) {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(copied ? .green : Theme.accent)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy the LAN address")
+            }
+
+            WaveformLine()
+                .frame(height: 18)
+        }
+        .padding(16)
+        .background(
+            Theme.panel,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08))
+        )
+    }
+
+    private var statusText: String {
+        switch status {
+        case .starting: return "STARTING"
+        case .online: return "ONLINE"
+        case .offline: return "OFFLINE"
+        }
+    }
+
+    private var statusColor: Color {
+        switch status {
+        case .starting: return .orange
+        case .online: return .green
+        case .offline: return .red
+        }
+    }
+}
+
+private struct WaveformLine: View {
+    var body: some View {
+        Canvas { context, size in
+            let mid = size.height / 2
+            var path = Path()
+            let steps = 96
+            for i in 0...steps {
+                let t = CGFloat(i) / CGFloat(steps)
+                let envelope = sin(.pi * t)
+                let x = size.width * t
+                let y = mid + sin(t * 23) * envelope * size.height * 0.42
+                if i == 0 {
+                    path.move(to: CGPoint(x: x, y: y))
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+            context.stroke(path, with: .color(Theme.accent.opacity(0.55)), lineWidth: 1.3)
+
+            var axis = Path()
+            axis.move(to: CGPoint(x: 0, y: mid))
+            axis.addLine(to: CGPoint(x: size.width, y: mid))
+            context.stroke(axis, with: .color(.white.opacity(0.06)), lineWidth: 1)
+        }
+    }
+}
+
+private struct SectionLabel: View {
+    let title: String
+    var count: Int? = nil
+
+    init(_ title: String, count: Int? = nil) {
+        self.title = title
+        self.count = count
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .tracking(1.2)
+            Spacer()
+            if let count {
+                Text("\(count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .monospacedDigit()
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
+}
+
+// MARK: - Job row
 
 private struct JobRow: View {
     @EnvironmentObject private var model: AppModel
@@ -424,71 +760,216 @@ private struct JobRow: View {
     let job: StemdClient.Job
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(displayTitle).font(.headline)
-                    if let progress = job.progress {
-                        ProgressView(value: Double(progress.fraction))
-                        Text(progress.stage.capitalized)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if job.state == "done" {
-                        Text("\(durationText) · separated in \(separationText)")
-                            .font(.caption)
-                        if let realtime = job.realtime {
-                            Text("\(job.stems.count) stems · \(String(format: "%.1fx", realtime)) realtime")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if job.state == "failed" {
-                        Text(job.error ?? "Failed").font(.caption).foregroundStyle(.red)
-                    }
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 12) {
+                ArtTile(color: tileColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                Spacer(minLength: 4)
-                if !job.stems.isEmpty {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            expanded.toggle()
-                        }
-                    } label: {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 32, height: 32)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(expanded ? "Hide stems" : "Show stems")
-                }
+                Spacer(minLength: 8)
+                trailing
             }
-            if expanded {
-                ForEach(job.stems) { stem in
-                    if let url = model.shareURL(for: stem) {
-                        ShareLink(item: url) {
-                            Label("\(stem.name) · \(stem.contentType)", systemImage: "square.and.arrow.up")
-                        }
-                        .font(.caption)
-                    }
-                }
-                if job.state != "running" && job.state != "queued" {
-                    Button(role: .destructive) {
-                        Task { await model.remove(job) }
-                    } label: {
-                        Label("Remove from cache", systemImage: "trash")
-                    }
+
+            if isRunning, let progress = job.progress {
+                progressRow(progress)
+            } else if isDone {
+                metricsRow
+            } else if job.state == "failed" {
+                Label(job.error ?? "Separation failed", systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
-                }
+                    .foregroundStyle(.red)
+            }
+
+            if expanded {
+                stemRows
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
+        .sensoryFeedback(.selection, trigger: expanded)
     }
 
-    /// `Artist - Title`, or the title alone when the source had no artist.
-    private var displayTitle: String {
-        let title = job.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled track"
+    private var tileColor: Color {
+        switch job.state {
+        case "done": return .green
+        case "failed": return .red
+        case "running": return Theme.accent
+        default: return Color(.systemGray)
+        }
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        if isDone && !job.stems.isEmpty {
+            Button {
+                withAnimation(.snappy(duration: 0.22)) {
+                    expanded.toggle()
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(expanded ? "Hide stems" : "Show stems")
+        } else {
+            statusLabel
+        }
+    }
+
+    private var statusLabel: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 5, height: 5)
+            Text(statusText)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .tracking(0.8)
+        }
+        .foregroundStyle(statusColor)
+    }
+
+    private var statusText: String {
+        switch job.state {
+        case "done": return "DONE"
+        case "failed": return "FAILED"
+        case "cancelled": return "STOPPED"
+        case "queued": return "QUEUED"
+        default: return (job.progress?.stage ?? "working").uppercased()
+        }
+    }
+
+    private var statusColor: Color {
+        switch job.state {
+        case "done": return .green
+        case "failed": return .red
+        case "running": return Theme.accent
+        default: return Color(.secondaryLabel)
+        }
+    }
+
+    private func progressRow(_ progress: StemdClient.Progress) -> some View {
+        VStack(spacing: 5) {
+            HStack {
+                Spacer()
+                Text("\(Int((Double(progress.fraction) * 100).rounded()))%")
+                    .font(.system(size: 10, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.08))
+                    Capsule()
+                        .fill(Theme.accent)
+                        .frame(width: proxy.size.width * CGFloat(progress.fraction))
+                }
+            }
+            .frame(height: 4)
+        }
+    }
+
+    private var metricsRow: some View {
+        HStack(spacing: 7) {
+            Text(durationText)
+            Text("·").foregroundStyle(.tertiary)
+            Text(separationText)
+            Text("·").foregroundStyle(.tertiary)
+            Text(realtimeText)
+        }
+        .font(.system(size: 11, design: .monospaced))
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .accessibilityLabel("\(durationText) long, separated in \(separationText), \(realtimeText) realtime")
+    }
+
+    private var stemRows: some View {
+        VStack(spacing: 0) {
+            Divider()
+            ForEach(Array(job.stems.enumerated()), id: \.element.id) { index, stem in
+                HStack(spacing: 9) {
+                    Circle()
+                        .fill(stemColor(stem.name))
+                        .frame(width: 6, height: 6)
+                    Text(stem.name.capitalized)
+                        .font(.subheadline)
+                    Spacer()
+                    Text(stemDetail(stem))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    if let url = model.shareURL(for: stem) {
+                        ShareLink(item: url) {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                                .frame(width: 28, height: 28)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Share \(stem.name)")
+                    }
+                }
+                .padding(.vertical, 6)
+                if index < job.stems.count - 1 {
+                    Divider()
+                }
+            }
+            Button(role: .destructive) {
+                Task { await model.remove(job) }
+            } label: {
+                Label("Remove from cache", systemImage: "trash")
+                    .font(.footnote)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 2)
+        .background(
+            Color.primary.opacity(0.03),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+    }
+
+    private func stemColor(_ name: String) -> Color {
+        switch name {
+        case "vocals": return .purple
+        case "drums": return .orange
+        default: return .teal
+        }
+    }
+
+    private func stemDetail(_ stem: StemdClient.Stem) -> String {
+        let bytes = ByteCountFormatter.string(fromByteCount: Int64(stem.bytes), countStyle: .file)
+        let kind = stem.contentType.replacingOccurrences(of: "audio/", with: "").uppercased()
+        return "\(kind) · \(bytes)"
+    }
+
+    private var isRunning: Bool { job.state == "running" }
+    private var isDone: Bool { job.state == "done" }
+
+    private var title: String {
+        job.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled track"
+    }
+
+    private var subtitle: String {
         let artist = job.artist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return artist.isEmpty ? title : "\(artist) - \(title)"
+        if !artist.isEmpty { return artist }
+        return isDone ? "Separated on this iPad" : "Processing on this iPad"
     }
 
     /// The track's own length, from the geometry the server reports with a
@@ -509,5 +990,32 @@ private struct JobRow: View {
         }
         let total = Int(seconds.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private var realtimeText: String {
+        guard let realtime = job.realtime, realtime.isFinite, realtime > 0 else { return "—" }
+        return String(format: "%.1f×", realtime)
+    }
+}
+
+private struct ArtTile: View {
+    let color: Color
+
+    var body: some View {
+        Image(systemName: "waveform")
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.92))
+            .frame(width: 44, height: 44)
+            .background(
+                Theme.panel,
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+            )
+            .overlay(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
+                    .overlay(Circle().stroke(Color(.secondarySystemGroupedBackground), lineWidth: 2))
+                    .offset(x: 1, y: 1)
+            }
     }
 }

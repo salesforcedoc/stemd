@@ -240,6 +240,7 @@ struct StemdClient {
         }
 
         let version: String
+        let modelId: String
         let preset: String
         let maxTrackSecs: Double
         let jobs: Int
@@ -248,6 +249,7 @@ struct StemdClient {
 
         enum CodingKeys: String, CodingKey {
             case version, preset, jobs, models
+            case modelId = "model_id"
             case maxTrackSecs = "max_track_secs"
             case tokenRequired = "token_required"
         }
