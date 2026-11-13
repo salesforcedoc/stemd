@@ -249,9 +249,10 @@ final class AppModel: ObservableObject {
     }
 }
 
-struct ContentView: View {
+struct StudioHomeView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("stemd.appearance") private var appearance = AppAppearance.cdj
     @State private var importing = false
     @State private var confirmingClear = false
     @State private var copiedAddress = false
@@ -378,6 +379,12 @@ struct ContentView: View {
                     Label("Clear stem cache", systemImage: "trash")
                 }
                 .disabled(model.jobs.isEmpty)
+                Divider()
+                Button {
+                    appearance = .cdj
+                } label: {
+                    Label("CDJ appearance", systemImage: "rectangle.on.rectangle")
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -1017,5 +1024,720 @@ private struct ArtTile: View {
                     .overlay(Circle().stroke(Color(.secondarySystemGroupedBackground), lineWidth: 2))
                     .offset(x: 1, y: 1)
             }
+    }
+}
+
+// MARK: - CDJ appearance
+
+enum AppAppearance: String {
+    case console
+    case cdj
+}
+
+/// Picks the appearance. Both screens share the same `AppModel`; only the
+/// presentation differs. CDJ is the default because this app lives next to a
+/// deck, and the deck's screen is the design language it should speak.
+struct ContentView: View {
+    @AppStorage("stemd.appearance") private var appearance = AppAppearance.cdj
+
+    var body: some View {
+        switch appearance {
+        case .console: StudioHomeView()
+        case .cdj: CDJHomeView()
+        }
+    }
+}
+
+private enum CDJTheme {
+    static let background = Color(red: 0.035, green: 0.035, blue: 0.045)
+    static let panel = Color(red: 0.075, green: 0.078, blue: 0.095)
+    static let accent = Color(red: 0.18, green: 0.68, blue: 1.0)
+    static let line = Color.white.opacity(0.10)
+    static let secondary = Color.white.opacity(0.55)
+    static let alert = Color(red: 1.0, green: 0.30, blue: 0.28)
+}
+
+/// An AlphaTheta-style screen: near-black, high contrast, oversized type,
+/// a full-width waveform and a strip of hardware-like buttons. Every label is
+/// sized to be read from across the booth rather than at arm's length.
+struct CDJHomeView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("stemd.appearance") private var appearance = AppAppearance.cdj
+    @State private var importing = false
+    @State private var confirmingClear = false
+    @State private var copiedAddress = false
+    @State private var expandedJob: String?
+    @State private var showDebug = ProcessInfo.processInfo.arguments.contains("--debug")
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                CDJTheme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        statusHeader
+                        waveform
+                        modelPanel
+                        nowServing
+                        cache
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.top, 10)
+                    .padding(.bottom, 12)
+                }
+            }
+            .safeAreaInset(edge: .bottom) { actionBar }
+            .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showDebug) {
+                NavigationStack {
+                    DebugView(log: model.apiLog)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { showDebug = false }
+                            }
+                        }
+                }
+            }
+            .fileImporter(
+                isPresented: $importing,
+                allowedContentTypes: [.audio],
+                allowsMultipleSelection: false
+            ) { result in
+                guard case .success(let urls) = result, let url = urls.first else { return }
+                Task { await model.separate(url) }
+            }
+            .confirmationDialog(
+                "Clear the stem cache?",
+                isPresented: $confirmingClear,
+                titleVisibility: .visible
+            ) {
+                Button("Delete all stems", role: .destructive) {
+                    Task { await model.clearCache() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Every separated stem and its detail file will be deleted. The model files stay installed.")
+            }
+            .alert(
+                "stemd",
+                isPresented: Binding(
+                    get: { model.error != nil },
+                    set: { if !$0 { model.error = nil } }
+                )
+            ) {
+                Button("OK") { model.error = nil }
+            } message: {
+                Text(model.error ?? "")
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task { await model.start() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { model.foregrounded() }
+        }
+    }
+
+    private var statusHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("STEM SERVER")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(CDJTheme.accent)
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 12, height: 12)
+                        Text(statusText)
+                            .font(.system(size: 32, weight: .heavy))
+                            .foregroundStyle(.white)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(precision)
+                        .font(.system(size: 24, weight: .bold, design: .monospaced))
+                        .foregroundStyle(CDJTheme.accent)
+                    Text(preset)
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .tracking(1.2)
+                        .foregroundStyle(CDJTheme.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Text(address)
+                    .font(.system(size: 19, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                Spacer(minLength: 6)
+                Button(action: copyAddress) {
+                    Image(systemName: copiedAddress ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(copiedAddress ? .green : CDJTheme.accent)
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy the LAN address")
+            }
+        }
+    }
+
+    private var waveform: some View {
+        CDJWaveform(progress: activeJob?.progress.map { Double($0.fraction) })
+            .frame(height: 128)
+            .background(CDJTheme.panel)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(CDJTheme.line)
+            )
+    }
+
+    @ViewBuilder
+    private var modelPanel: some View {
+        if let models = model.health?.models {
+            if models.downloading {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("MODEL DOWNLOAD")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(CDJTheme.accent)
+                    HStack {
+                        Text(models.file ?? "Preparing…")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(downloadPercent(models))
+                            .font(.system(size: 24, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white)
+                    }
+                    ProgressView(
+                        value: models.total > 0
+                            ? Double(models.done) / Double(models.total)
+                            : nil
+                    )
+                    .tint(CDJTheme.accent)
+                }
+                .padding(16)
+                .background(CDJTheme.panel, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(CDJTheme.line)
+                )
+            } else if !models.present {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("MODEL FILES MISSING")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .tracking(2)
+                        .foregroundStyle(CDJTheme.alert)
+                    Text("Download the weights before separating.")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(.white)
+                    Button {
+                        Task { await model.downloadModels() }
+                    } label: {
+                        Label("DOWNLOAD MODEL", systemImage: "arrow.down.circle.fill")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .tracking(1)
+                            .foregroundStyle(CDJTheme.background)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(CDJTheme.accent, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(16)
+                .background(CDJTheme.panel, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(CDJTheme.alert.opacity(0.35))
+                )
+            }
+        }
+    }
+
+    private func downloadPercent(_ models: StemdClient.Health.Models) -> String {
+        guard models.total > 0 else { return "" }
+        let percent = Double(models.done) / Double(models.total) * 100
+        return "\(Int(percent.rounded()))%"
+    }
+
+    @ViewBuilder
+    private var nowServing: some View {
+        if let job = activeJob {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(job.state == "queued" ? "QUEUED" : "NOW SEPARATING")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .tracking(2)
+                    .foregroundStyle(CDJTheme.accent)
+                Text(TrackFormat.title(job))
+                    .font(.system(size: 38, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+                Text(TrackFormat.artist(job))
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(CDJTheme.secondary)
+                    .lineLimit(1)
+
+                if let progress = job.progress {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(progress.stage.uppercased())
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .tracking(1.2)
+                            .foregroundStyle(.white)
+                        Spacer()
+                        Text("\(Int((Double(progress.fraction) * 100).rounded()))%")
+                            .font(.system(size: 28, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .contentTransition(.numericText())
+                    }
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.white.opacity(0.10))
+                            Capsule()
+                                .fill(CDJTheme.accent)
+                                .frame(width: proxy.size.width * CGFloat(progress.fraction))
+                        }
+                    }
+                    .frame(height: 12)
+                }
+
+                HStack(spacing: 30) {
+                    bigMetric("DURATION", TrackFormat.duration(job))
+                    bigMetric("SPEED", TrackFormat.realtime(job))
+                    bigMetric("FILES", "\(job.stems.count)")
+                }
+            }
+        } else if let job = lastDone {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("READY")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .tracking(2)
+                    .foregroundStyle(CDJTheme.accent)
+                Text(TrackFormat.title(job))
+                    .font(.system(size: 34, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+                Text(TrackFormat.artist(job))
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(CDJTheme.secondary)
+                    .lineLimit(1)
+                HStack(spacing: 30) {
+                    bigMetric("LAST", TrackFormat.separation(job))
+                    bigMetric("SPEED", TrackFormat.realtime(job))
+                    bigMetric("FILES", "\(job.stems.count)")
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("NO TRACK LOADED")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .tracking(2)
+                    .foregroundStyle(CDJTheme.accent)
+                Text("Import a track to separate it")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        }
+    }
+
+    private var cache: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("STEM CACHE")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .tracking(2)
+                    .foregroundStyle(CDJTheme.secondary)
+                Spacer()
+                Text("\(model.jobs.count)")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundStyle(CDJTheme.secondary)
+            }
+            if model.jobs.isEmpty {
+                Text("No separations yet")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(CDJTheme.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                ForEach(model.jobs) { job in
+                    CDJJobRow(
+                        job: job,
+                        expanded: expandedJob == job.id,
+                        toggle: {
+                            withAnimation(.snappy(duration: 0.22)) {
+                                expandedJob = expandedJob == job.id ? nil : job.id
+                            }
+                        }
+                    )
+                    .environmentObject(model)
+                }
+            }
+        }
+    }
+
+    private var actionBar: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(CDJTheme.line)
+                .frame(height: 1)
+            HStack(spacing: 10) {
+                if model.serverDown || (model.health == nil && !model.starting) {
+                    CDJActionButton(title: "RESTART", symbol: "arrow.clockwise") {
+                        Task { await model.restartServer() }
+                    }
+                } else {
+                    CDJActionButton(
+                        title: "IMPORT",
+                        symbol: "plus",
+                        enabled: model.health?.models.present == true
+                    ) {
+                        importing = true
+                    }
+                }
+                CDJActionButton(
+                    title: "CLEAR",
+                    symbol: "trash",
+                    tint: CDJTheme.alert,
+                    enabled: !model.jobs.isEmpty
+                ) {
+                    confirmingClear = true
+                }
+                CDJActionButton(title: "DEBUG", symbol: "ladybug") {
+                    showDebug = true
+                }
+                CDJActionButton(title: "CONSOLE", symbol: "rectangle.on.rectangle") {
+                    appearance = .console
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+        }
+        .background(CDJTheme.background)
+    }
+
+    private func bigMetric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(CDJTheme.secondary)
+            Text(value)
+                .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+    }
+
+    private var activeJob: StemdClient.Job? {
+        model.jobs.first { $0.state == "running" } ?? model.jobs.first { $0.state == "queued" }
+    }
+
+    private var lastDone: StemdClient.Job? {
+        model.jobs.first { $0.state == "done" }
+    }
+
+    private var statusText: String {
+        if model.starting { return "STARTING" }
+        if model.serverDown || model.health == nil { return "OFFLINE" }
+        return "ONLINE"
+    }
+
+    private var statusColor: Color {
+        if model.starting { return .orange }
+        if model.serverDown || model.health == nil { return CDJTheme.alert }
+        return .green
+    }
+
+    private var precision: String {
+        guard let health = model.health, !model.serverDown else { return "—" }
+        return health.modelId.split(separator: "-").last.map { $0.uppercased() } ?? "—"
+    }
+
+    private var preset: String {
+        model.health?.preset.uppercased() ?? "—"
+    }
+
+    private var address: String {
+        StemdServer.shared.shareBase()?.absoluteString ?? "NO NETWORK"
+    }
+
+    private func copyAddress() {
+        guard let text = StemdServer.shared.shareBase()?.absoluteString else { return }
+        UIPasteboard.general.string = text
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        copiedAddress = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            copiedAddress = false
+        }
+    }
+}
+
+private struct CDJActionButton: View {
+    let title: String
+    let symbol: String
+    var tint: Color = CDJTheme.accent
+    var enabled: Bool = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 26, weight: .bold))
+                Text(title)
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .tracking(1)
+            }
+            .foregroundStyle(enabled ? tint : CDJTheme.secondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 80)
+            .background(CDJTheme.panel)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .strokeBorder(enabled ? tint.opacity(0.55) : CDJTheme.line)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(title)
+    }
+}
+
+/// A CDJ-style waveform band: dense vertical bars in the accent blue, with a
+/// white playhead while a job is running.
+private struct CDJWaveform: View {
+    let progress: Double?
+
+    var body: some View {
+        Canvas { context, size in
+            let bars = 160
+            let mid = size.height / 2
+            for i in 0..<bars {
+                let t = Double(i) / Double(bars)
+                let envelope = sin(Double.pi * t)
+                let raw = sin(Double(i) * 12.9898) * 43758.5453
+                let noise = abs(raw.truncatingRemainder(dividingBy: 1.0))
+                let height = (0.14 + noise * 0.86) * envelope * Double(size.height) * 0.44
+                let x = size.width * CGFloat(t)
+                let rect = CGRect(
+                    x: x - 1.4,
+                    y: mid - CGFloat(height),
+                    width: 2.8,
+                    height: CGFloat(height) * 2
+                )
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: 1.2),
+                    with: .color(CDJTheme.accent.opacity(0.78))
+                )
+            }
+
+            var axis = Path()
+            axis.move(to: CGPoint(x: 0, y: mid))
+            axis.addLine(to: CGPoint(x: size.width, y: mid))
+            context.stroke(axis, with: .color(.white.opacity(0.08)), lineWidth: 1)
+
+            if let progress {
+                let x = size.width * CGFloat(min(max(progress, 0), 1))
+                var playhead = Path()
+                playhead.move(to: CGPoint(x: x, y: 0))
+                playhead.addLine(to: CGPoint(x: x, y: size.height))
+                context.stroke(playhead, with: .color(.white.opacity(0.92)), lineWidth: 2)
+            }
+        }
+    }
+}
+
+private struct CDJJobRow: View {
+    @EnvironmentObject private var model: AppModel
+    let job: StemdClient.Job
+    let expanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: toggle) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(TrackFormat.title(job))
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(TrackFormat.artist(job))
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(CDJTheme.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        statusChip
+                    }
+
+                    HStack(spacing: 18) {
+                        Text(TrackFormat.duration(job))
+                        Text(TrackFormat.separation(job))
+                        Text(TrackFormat.realtime(job))
+                    }
+                    .font(.system(size: 16, weight: .medium, design: .monospaced))
+                    .foregroundStyle(CDJTheme.secondary)
+
+                    if job.state == "running", let progress = job.progress {
+                        GeometryReader { proxy in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.white.opacity(0.10))
+                                Capsule()
+                                    .fill(CDJTheme.accent)
+                                    .frame(width: proxy.size.width * CGFloat(progress.fraction))
+                            }
+                        }
+                        .frame(height: 8)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(job.stems.isEmpty)
+
+            if expanded {
+                CDJWaveform(progress: nil)
+                    .frame(height: 34)
+                    .opacity(0.55)
+                    .padding(.vertical, 2)
+
+                VStack(spacing: 0) {
+                    ForEach(Array(job.stems.enumerated()), id: \.element.id) { index, stem in
+                        HStack(spacing: 12) {
+                            Circle()
+                                .fill(stemColor(stem.name))
+                                .frame(width: 10, height: 10)
+                            Text(stem.name.capitalized)
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(.white)
+                            Spacer()
+                            Text(stemDetail(stem))
+                                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                                .foregroundStyle(CDJTheme.secondary)
+                            if let url = model.shareURL(for: stem) {
+                                ShareLink(item: url) {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 20, weight: .semibold))
+                                        .foregroundStyle(CDJTheme.accent)
+                                        .frame(width: 44, height: 44)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Share \(stem.name)")
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        if index < job.stems.count - 1 {
+                            Divider()
+                        }
+                    }
+                    Button(role: .destructive) {
+                        Task { await model.remove(job) }
+                    } label: {
+                        Label("REMOVE FROM CACHE", systemImage: "trash")
+                            .font(.system(size: 15, weight: .bold, design: .monospaced))
+                            .tracking(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(CDJTheme.alert)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .padding(16)
+        .background(
+            CDJTheme.panel,
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(CDJTheme.line)
+        )
+    }
+
+    @ViewBuilder
+    private var statusChip: some View {
+        switch job.state {
+        case "running":
+            Text("SEPARATING")
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .tracking(1)
+                .foregroundStyle(CDJTheme.accent)
+        case "failed":
+            Text("FAILED")
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .tracking(1)
+                .foregroundStyle(CDJTheme.alert)
+        case "queued":
+            Text("QUEUED")
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .tracking(1)
+                .foregroundStyle(CDJTheme.secondary)
+        default:
+            Image(systemName: "chevron.down")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(CDJTheme.secondary)
+                .rotationEffect(.degrees(expanded ? 180 : 0))
+        }
+    }
+
+    private func stemColor(_ name: String) -> Color {
+        switch name {
+        case "vocals": return .purple
+        case "drums": return CDJTheme.alert
+        default: return CDJTheme.accent
+        }
+    }
+
+    private func stemDetail(_ stem: StemdClient.Stem) -> String {
+        let bytes = ByteCountFormatter.string(fromByteCount: Int64(stem.bytes), countStyle: .file)
+        let kind = stem.contentType.replacingOccurrences(of: "audio/", with: "").uppercased()
+        return "\(kind) · \(bytes)"
+    }
+}
+
+private enum TrackFormat {
+    static func title(_ job: StemdClient.Job) -> String {
+        job.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Untitled track"
+    }
+
+    static func artist(_ job: StemdClient.Job) -> String {
+        let artist = job.artist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return artist.isEmpty ? "Unknown artist" : artist
+    }
+
+    static func duration(_ job: StemdClient.Job) -> String {
+        guard let frames = job.frames, frames > 0,
+              let rate = job.sampleRate, rate > 0
+        else { return "—" }
+        let seconds = Int((Double(frames) / Double(rate)).rounded())
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    static func separation(_ job: StemdClient.Job) -> String {
+        guard let seconds = job.seconds else { return "—" }
+        if seconds < 60 {
+            return String(format: "%.1f s", seconds)
+        }
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    static func realtime(_ job: StemdClient.Job) -> String {
+        guard let realtime = job.realtime, realtime.isFinite, realtime > 0 else { return "—" }
+        return String(format: "%.1f×", realtime)
     }
 }
