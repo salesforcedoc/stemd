@@ -176,6 +176,7 @@ pub struct ProLink {
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
     interface: String,
+    commands: mpsc::Sender<fetch::Command>,
 }
 
 impl ProLink {
@@ -202,6 +203,30 @@ impl ProLink {
         Snapshot {
             interface: self.interface.clone(),
             decks,
+        }
+    }
+
+    /// Delete the tracks fetched from decks and the identities that mark them
+    /// as already downloaded, then queue whatever is loaded now again.
+    ///
+    /// Separated stems are untouched: they live in the cache, and "Empty cache"
+    /// is what removes those.
+    pub fn forget_downloads(&self) {
+        if self.commands.send(fetch::Command::Forget).is_err() {
+            tracing::debug!("ProLink: download worker is gone");
+            return;
+        }
+        let mut state = self.state.lock();
+        state.fetches.clear();
+        let now = Instant::now();
+        for deck in state.decks.values_mut() {
+            deck.candidate = deck.loaded.and_then(|loaded| {
+                (loaded.analyze.is_rekordbox() && loaded.key.slot.is_media()).then_some(Candidate {
+                    key: loaded.key,
+                    since: now,
+                    sent: false,
+                })
+            });
         }
     }
 
@@ -234,7 +259,7 @@ pub fn start(config: Config) -> Result<Started> {
 
     let state = Arc::new(Mutex::new(State::default()));
     let stop = Arc::new(AtomicBool::new(false));
-    let (requests_tx, requests_rx) = mpsc::channel();
+    let (commands_tx, commands_rx) = mpsc::channel();
     let (downloads_tx, downloads) = mpsc::channel();
 
     let fetcher = fetch::Fetcher::new(
@@ -246,7 +271,7 @@ pub fn start(config: Config) -> Result<Started> {
     let fetcher_stop = Arc::clone(&stop);
     std::thread::Builder::new()
         .name("stemd-prolink-fetch".into())
-        .spawn(move || fetcher.run(requests_rx, fetcher_stop))
+        .spawn(move || fetcher.run(commands_rx, fetcher_stop))
         .context("spawning the ProLink download worker")?;
 
     let interface = config.interface.name.clone();
@@ -255,6 +280,7 @@ pub fn start(config: Config) -> Result<Started> {
     let download = config.download;
     let monitor_state = Arc::clone(&state);
     let monitor_stop = Arc::clone(&stop);
+    let monitor_commands = commands_tx.clone();
     std::thread::Builder::new()
         .name("stemd-prolink".into())
         .spawn(move || {
@@ -264,7 +290,7 @@ pub fn start(config: Config) -> Result<Started> {
                 config,
                 monitor_state,
                 monitor_stop,
-                requests_tx,
+                monitor_commands,
             )
         })
         .context("spawning the ProLink monitor")?;
@@ -283,6 +309,7 @@ pub fn start(config: Config) -> Result<Started> {
             state,
             stop,
             interface,
+            commands: commands_tx,
         }),
         downloads,
     })
@@ -294,7 +321,7 @@ fn monitor(
     config: Config,
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
-    requests: mpsc::Sender<fetch::Request>,
+    commands: mpsc::Sender<fetch::Command>,
 ) {
     let announcement = vcdj::announcement(
         config.deck_number,
@@ -338,7 +365,7 @@ fn monitor(
 
         receive(&keepalive, &state, true, config.deck_number, &mut buffer);
         receive(&status, &state, false, config.deck_number, &mut buffer);
-        tick(&state, &requests);
+        tick(&state, &commands);
     }
 }
 
@@ -473,7 +500,7 @@ fn observe_status(state: &Mutex<State>, status: packets::Status, address: Ipv4Ad
     }
 }
 
-fn tick(state: &Mutex<State>, requests: &mpsc::Sender<fetch::Request>) {
+fn tick(state: &Mutex<State>, commands: &mpsc::Sender<fetch::Command>) {
     let mut queued = Vec::new();
     {
         let mut state = state.lock();
@@ -519,12 +546,12 @@ fn tick(state: &Mutex<State>, requests: &mpsc::Sender<fetch::Request>) {
             // same medium does not enqueue a duplicate.
             fetches.insert(key, FetchState::Resolving);
             candidate.sent = true;
-            queued.push(fetch::Request { key, address });
+            queued.push(fetch::Command::Fetch(fetch::Request { key, address }));
         }
     }
 
-    for request in queued {
-        if requests.send(request).is_err() {
+    for command in queued {
+        if commands.send(command).is_err() {
             tracing::debug!("ProLink: download worker is gone");
             break;
         }
@@ -660,10 +687,12 @@ mod tests {
         );
         state.fetches.insert(key, FetchState::Downloaded);
 
+        let (commands, _worker) = mpsc::channel();
         let prolink = ProLink {
             state: Arc::new(Mutex::new(state)),
             stop: Arc::new(AtomicBool::new(false)),
             interface: "en0".into(),
+            commands,
         };
         let snapshot = prolink.snapshot();
         assert_eq!(snapshot.interface, "en0");
@@ -723,10 +752,15 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         tick(&state, &sender);
         tick(&state, &sender);
-        let requests: Vec<_> = receiver.try_iter().collect();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].key, key);
-        assert_eq!(requests[0].address, Ipv4Addr::new(169, 254, 1, 1));
+        let commands: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            fetch::Command::Fetch(request) => {
+                assert_eq!(request.key, key);
+                assert_eq!(request.address, Ipv4Addr::new(169, 254, 1, 1));
+            }
+            fetch::Command::Forget => panic!("expected a fetch, got Forget"),
+        }
         assert!(matches!(
             state.lock().fetches.get(&key),
             Some(FetchState::Resolving)

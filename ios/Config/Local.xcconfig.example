@@ -1,0 +1,6 @@
+// Copy this file to Local.xcconfig in the same directory and set your team.
+// Local.xcconfig is gitignored, so the ID is never committed.
+//
+// Find the ID in Xcode -> Signing & Capabilities, or at
+// developer.apple.com -> Account -> Membership.
+STEMD_DEVELOPMENT_TEAM = ABCDE12345

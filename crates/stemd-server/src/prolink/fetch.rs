@@ -37,6 +37,14 @@ pub(super) struct Request {
     pub address: Ipv4Addr,
 }
 
+/// What the monitor and the window ask the download worker to do.
+pub(super) enum Command {
+    Fetch(Request),
+    /// Drop every file fetched from a deck and the identities that map them,
+    /// so loading the same track again downloads and separates it again.
+    Forget,
+}
+
 pub(super) struct Fetcher {
     state: Arc<Mutex<State>>,
     directory: PathBuf,
@@ -67,14 +75,41 @@ impl Fetcher {
         }
     }
 
-    pub fn run(mut self, requests: Receiver<Request>, stop: Arc<AtomicBool>) {
+    pub fn run(mut self, commands: Receiver<Command>, stop: Arc<AtomicBool>) {
         while !stop.load(Ordering::Relaxed) {
-            match requests.recv_timeout(Duration::from_millis(300)) {
-                Ok(request) => self.handle(request),
+            match commands.recv_timeout(Duration::from_millis(300)) {
+                Ok(Command::Fetch(request)) => self.handle(request),
+                Ok(Command::Forget) => self.forget(),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
+    }
+
+    /// Empty the download directory and forget the index. Separated stems live
+    /// in the cache, not here; this only drops the copies fetched from decks.
+    fn forget(&mut self) {
+        match std::fs::read_dir(&self.directory) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let removed = if path.is_dir() {
+                        std::fs::remove_dir_all(&path)
+                    } else {
+                        std::fs::remove_file(&path)
+                    };
+                    if let Err(err) = removed {
+                        tracing::warn!("ProLink: removing {}: {err}", path.display());
+                    }
+                }
+            }
+            Err(err) => tracing::warn!("ProLink: reading {}: {err}", self.directory.display()),
+        }
+        self.index = Index::open(&self.directory);
+        tracing::info!(
+            "ProLink: forgot downloaded tracks in {}",
+            self.directory.display()
+        );
     }
 
     fn handle(&mut self, request: Request) {

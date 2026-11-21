@@ -215,11 +215,8 @@ impl Window {
             |ui| recents::list(ui, palette, &mut self.sheen, &self.state.drops, &recent),
         );
 
-        let snapshot = self
-            .state
-            .prolink
-            .as_ref()
-            .map(|prolink| prolink.snapshot());
+        let prolink = self.state.prolink.as_deref();
+        let snapshot = prolink.map(|prolink| prolink.snapshot());
         let decks = snapshot
             .as_ref()
             .filter(|snapshot| !snapshot.decks.is_empty())
@@ -233,7 +230,7 @@ impl Window {
             decks,
             show_prolink,
             section::UNDER_LABEL,
-            |ui| prolink::list(ui, palette, sheen, snapshot.as_ref()),
+            |ui| prolink::list(ui, palette, sheen, snapshot.as_ref(), prolink),
         );
 
         let mut clear_logs = false;

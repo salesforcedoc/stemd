@@ -77,6 +77,116 @@ pub fn decode_flac(bytes: Vec<u8>) -> Result<Decoded> {
     decode_stream(mss, &hint, "the flac stem")
 }
 
+/// The identifying tags a file carries, when its container declares them.
+///
+/// Filled from the container's metadata where symphonia understands it: ID3v2
+/// in MP3, `ilst` atoms in MP4/M4A, and Vorbis comments in FLAC and Ogg. WAV
+/// and AIFF have no metadata reader in symphonia 0.5, so they come back empty.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tags {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+}
+
+impl Tags {
+    /// True when the file named none of the three.
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.artist.is_none() && self.album.is_none()
+    }
+}
+
+/// Read a file's tags without decoding its audio.
+///
+/// Never fails: a container that cannot be probed, or one that carries no
+/// tags, yields empty tags. Rejecting an upload because its metadata is
+/// unreadable would trade a useful separation for a naming problem.
+///
+/// Takes a path rather than a byte slice because symphonia's reader wants an
+/// owned source; copying a multi-hundred-megabyte upload just to read its
+/// header would cost more than the probe.
+pub fn tags(path: &Path) -> Tags {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Tags::default();
+    };
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    tags_from_stream(mss, path.extension().and_then(|e| e.to_str()))
+}
+
+fn tags_from_stream(mss: MediaSourceStream, extension: Option<&str>) -> Tags {
+    let mut hint = Hint::new();
+    if let Some(ext) = extension {
+        hint.with_extension(ext);
+    }
+    let Ok(mut probed) = symphonia::default::get_probe().format(
+        &hint,
+        mss,
+        &FormatOptions::default(),
+        &MetadataOptions::default(),
+    ) else {
+        return Tags::default();
+    };
+    let mut tags = Tags::default();
+    // Symphonia separates tags that sit outside the container (the ID3v2
+    // header an MP3 carries) from the container's own metadata (Vorbis
+    // comments, MP4 atoms). A file can have either or both.
+    if let Some(mut metadata) = probed.metadata.get() {
+        collect_tags(&mut metadata, &mut tags);
+    }
+    let mut format = probed.format;
+    collect_tags(&mut format.metadata(), &mut tags);
+    // A few containers only surface their comment block once the first packet
+    // is read (Ogg keeps it in-band). Reading a handful of packets is cheap
+    // and does not decode audio; stop as soon as all three are known.
+    for _ in 0..8 {
+        if tags.title.is_some() && tags.artist.is_some() && tags.album.is_some() {
+            break;
+        }
+        if format.next_packet().is_err() {
+            break;
+        }
+        collect_tags(&mut format.metadata(), &mut tags);
+    }
+    tags
+}
+
+fn collect_tags(metadata: &mut symphonia::core::meta::Metadata<'_>, tags: &mut Tags) {
+    let Some(revision) = metadata.skip_to_latest() else {
+        return;
+    };
+    for tag in revision.tags() {
+        let Some(value) = text(&tag.value) else {
+            continue;
+        };
+        match tag.std_key {
+            Some(symphonia::core::meta::StandardTagKey::TrackTitle) => {
+                tags.title.get_or_insert(value);
+            }
+            Some(symphonia::core::meta::StandardTagKey::Artist) => {
+                tags.artist.get_or_insert(value);
+            }
+            Some(symphonia::core::meta::StandardTagKey::Album) => {
+                tags.album.get_or_insert(value);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A tag's text, or `None` when it is binary, flagged or blank.
+fn text(value: &symphonia::core::meta::Value) -> Option<String> {
+    let text = match value {
+        symphonia::core::meta::Value::String(s) => s.trim(),
+        symphonia::core::meta::Value::UnsignedInt(n) => return Some(n.to_string()),
+        symphonia::core::meta::Value::SignedInt(n) => return Some(n.to_string()),
+        _ => return None,
+    };
+    // RIFF INFO strings are NUL-terminated inside their chunk and symphonia
+    // keeps the terminator.
+    let text = text.trim_matches(|c: char| c.is_whitespace() || c == '\0');
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
 fn decode_stream(mss: MediaSourceStream, hint: &Hint, label: &str) -> Result<Decoded> {
     let probed = symphonia::default::get_probe()
         .format(
@@ -278,7 +388,8 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{elst_media_time, spread};
+    use super::{elst_media_time, spread, tags, text};
+    use std::path::Path;
 
     /// The ordinary case: interleaved in, planar out, order preserved.
     #[test]
@@ -352,5 +463,25 @@ mod tests {
         for cut in 0..full.len() {
             let _ = elst_media_time(&full[..cut]);
         }
+    }
+
+    #[test]
+    fn riff_tags_lose_their_nul_terminator() {
+        // RIFF INFO keeps the NUL inside the chunk value.
+        let value = symphonia::core::meta::Value::String("Ain't In LA\0".to_owned());
+        assert_eq!(text(&value).as_deref(), Some("Ain't In LA"));
+    }
+
+    #[test]
+    fn blank_and_binary_tags_are_not_names() {
+        use symphonia::core::meta::Value;
+        assert_eq!(text(&Value::String("   ".to_owned())), None);
+        assert_eq!(text(&Value::Binary(Box::from(&b"\x00\x01"[..]))), None);
+        assert_eq!(text(&Value::Flag), None);
+    }
+
+    #[test]
+    fn a_missing_file_has_no_tags() {
+        assert!(tags(Path::new("/nonexistent/stemd/track.mp3")).is_empty());
     }
 }

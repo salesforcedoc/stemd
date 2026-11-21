@@ -44,5 +44,9 @@ __pycache__/
 xcuserdata/
 DerivedData/
 
+# Per-developer signing identity; Base.xcconfig includes it when present.
+# Copy Config/Local.xcconfig.example to create it.
+ios/Config/Local.xcconfig
+
 # Agent tooling state, including worktrees that are their own repositories
 .claude/

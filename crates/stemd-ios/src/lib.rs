@@ -78,6 +78,16 @@ pub struct Config {
     /// is on.
     #[serde(default = "default_require_token")]
     pub require_token: bool,
+    /// Where the pre-separation mix is saved when [`save_pcm`](Self::save_pcm)
+    /// is on. Normally a directory in the app's Documents, so the Files app can
+    /// reach it.
+    #[serde(default)]
+    pub pcm_dir: Option<PathBuf>,
+    /// Keep the original mix next to nothing else: a WAV reference the separated
+    /// stems can be compared against. Off by default; it doubles the storage a
+    /// track uses for as long as the file is kept.
+    #[serde(default)]
+    pub save_pcm: bool,
 }
 
 fn default_require_token() -> bool {
@@ -171,6 +181,8 @@ pub fn start(config: Config) -> Result<Started> {
         preset,
         max_track_secs: config.max_track_secs,
         token: token.clone(),
+        pcm_dir: config.pcm_dir,
+        save_pcm: config.save_pcm,
     })?;
     let open = Arc::new(std::sync::atomic::AtomicBool::new(!config.require_token));
     let requests = Arc::new(requests::RequestLog::new());
@@ -306,6 +318,17 @@ pub extern "C" fn stemd_ios_set_token_required(required: i32) {
         running
             .open
             .store(required == 0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Start (1) or stop (0) saving the original mix for each job.
+///
+/// Takes effect on the next job; a separation already running has its source
+/// consumed and cannot be re-read.
+#[unsafe(no_mangle)]
+pub extern "C" fn stemd_ios_set_save_pcm(save: i32) {
+    if let Some(running) = running().lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        running.jobs.set_save_pcm(save != 0);
     }
 }
 

@@ -21,16 +21,33 @@ pub fn set(path: PathBuf) {
 /// Append one line, including what MLX is holding. A missing path is a no-op.
 pub fn note(label: &str) {
     let Some(path) = PATH.get() else { return };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
     let line = format!(
-        "{now:.3} {label} active={} cached={} peak={}\n",
+        "{:.3} {label} active={} cached={} peak={}\n",
+        now(),
         crate::memory::active(),
         crate::memory::cached(),
         crate::memory::peak(),
     );
+    write(path, &line);
+}
+
+/// Append one line without asking MLX what it holds.
+///
+/// For the panic hook: a panic can fire inside the allocator, and querying it
+/// from the hook is how the logging path becomes a second panic.
+pub fn line(label: &str) {
+    let Some(path) = PATH.get() else { return };
+    write(path, &format!("{:.3} {label}\n", now()));
+}
+
+fn now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
+
+fn write(path: &std::path::Path, line: &str) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

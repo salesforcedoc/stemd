@@ -9,25 +9,32 @@
 /* Begin PBXBuildFile section */
 		2C5495FC82F044CBD635AA91 /* APILog.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD23467F63A6813AAEC058BC /* APILog.swift */; };
 		30A8A7888730149C3CBD238A /* StemdiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F264D560ADC5FBEC82383C /* StemdiOSApp.swift */; };
+		4618539084BC4098469046C8 /* Shared.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7BD4B6C3EB2383FB04EDB47 /* Shared.swift */; };
 		A290FA0E4C94545E6A5F272A /* DebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80679DDFBD76E9F3992B8357 /* DebugView.swift */; };
+		CF85443F33A5A40EC27BC226 /* BoothView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D36FCC27F910396ECF9EA2E /* BoothView.swift */; };
+		EC49275A6F253F8200E155B0 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB837AAE9C9D4BC5B78F4CAB /* LibraryView.swift */; };
 		F8AAF852C7F17FA63D89CFCE /* StemdClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B1E8E967F62D549188A9255 /* StemdClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		1365C7F72CEEBB9429478B7D /* stemd.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = stemd.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2F7A712369554D735632DFBF /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		3D36FCC27F910396ECF9EA2E /* BoothView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoothView.swift; sourceTree = "<group>"; };
 		7B1E8E967F62D549188A9255 /* StemdClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemdClient.swift; sourceTree = "<group>"; };
 		80679DDFBD76E9F3992B8357 /* DebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugView.swift; sourceTree = "<group>"; };
 		80F264D560ADC5FBEC82383C /* StemdiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemdiOSApp.swift; sourceTree = "<group>"; };
 		8BB325F66A11A97A4F57C2A2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B1E03417998BBAD8AD1BE394 /* stemd.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = stemd.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B9681D3361709784BAC6E46A /* StemdiOS-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "StemdiOS-Bridging-Header.h"; sourceTree = "<group>"; };
+		CB837AAE9C9D4BC5B78F4CAB /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		DD23467F63A6813AAEC058BC /* APILog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APILog.swift; sourceTree = "<group>"; };
+		F7BD4B6C3EB2383FB04EDB47 /* Shared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		049AD3C4A93FF6D7CF5D5455 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				1365C7F72CEEBB9429478B7D /* stemd.app */,
+				B1E03417998BBAD8AD1BE394 /* stemd.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -35,6 +42,7 @@
 		1ACE9CDF818A100953A172A5 = {
 			isa = PBXGroup;
 			children = (
+				AB4FC9C50F13C07E8CCB0E69 /* Config */,
 				1F655D6931D2250F32769872 /* StemdiOS */,
 				049AD3C4A93FF6D7CF5D5455 /* Products */,
 			);
@@ -44,13 +52,24 @@
 			isa = PBXGroup;
 			children = (
 				DD23467F63A6813AAEC058BC /* APILog.swift */,
+				3D36FCC27F910396ECF9EA2E /* BoothView.swift */,
 				80679DDFBD76E9F3992B8357 /* DebugView.swift */,
 				8BB325F66A11A97A4F57C2A2 /* Info.plist */,
+				CB837AAE9C9D4BC5B78F4CAB /* LibraryView.swift */,
+				F7BD4B6C3EB2383FB04EDB47 /* Shared.swift */,
 				7B1E8E967F62D549188A9255 /* StemdClient.swift */,
 				B9681D3361709784BAC6E46A /* StemdiOS-Bridging-Header.h */,
 				80F264D560ADC5FBEC82383C /* StemdiOSApp.swift */,
 			);
 			path = StemdiOS;
+			sourceTree = "<group>";
+		};
+		AB4FC9C50F13C07E8CCB0E69 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				2F7A712369554D735632DFBF /* Base.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -72,7 +91,7 @@
 			packageProductDependencies = (
 			);
 			productName = StemdiOS;
-			productReference = 1365C7F72CEEBB9429478B7D /* stemd.app */;
+			productReference = B1E03417998BBAD8AD1BE394 /* stemd.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -82,7 +101,12 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					76E619768F68BE88074DB440 = {
+						DevelopmentTeam = "$(STEMD_DEVELOPMENT_TEAM)";
+					};
+				};
 			};
 			buildConfigurationList = B0A37392DB59862CCEA0DC9A /* Build configuration list for PBXProject "StemdiOS" */;
 			developmentRegion = en;
@@ -150,7 +174,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				2C5495FC82F044CBD635AA91 /* APILog.swift in Sources */,
+				CF85443F33A5A40EC27BC226 /* BoothView.swift in Sources */,
 				A290FA0E4C94545E6A5F272A /* DebugView.swift in Sources */,
+				EC49275A6F253F8200E155B0 /* LibraryView.swift in Sources */,
+				4618539084BC4098469046C8 /* Shared.swift in Sources */,
 				F8AAF852C7F17FA63D89CFCE /* StemdClient.swift in Sources */,
 				30A8A7888730149C3CBD238A /* StemdiOSApp.swift in Sources */,
 			);
@@ -165,7 +192,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = E54DN8M3Q5;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = StemdiOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -213,6 +239,7 @@
 		};
 		B6E94FD7D27A7140F9F517F6 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 2F7A712369554D735632DFBF /* Base.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -246,6 +273,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "$(STEMD_DEVELOPMENT_TEAM)";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -261,6 +289,7 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.9;
@@ -273,7 +302,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = E54DN8M3Q5;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = StemdiOS/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -321,6 +349,7 @@
 		};
 		FA9622655F9B563BC0E4F421 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 2F7A712369554D735632DFBF /* Base.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -354,6 +383,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "$(STEMD_DEVELOPMENT_TEAM)";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -376,6 +406,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.9;

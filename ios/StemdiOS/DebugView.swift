@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// What the app is doing on the wire, from both ends.
+/// The settings screen, including the wire log the app keeps.
 ///
 /// Two lists on purpose:
 ///
@@ -38,6 +38,20 @@ struct DebugView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Toggle("Save Original PCM", isOn: Binding(
+                    get: { model.savePCM },
+                    set: { model.setSavePCM($0) }
+                ))
+                Text("Each new job also writes the mix the model separated to Documents/stemd-pcm as WAV. Compare it with the stems to hear what reconstruction is missing. Off by default because it doubles storage for the track.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("Files → On My iPhone → stemd → stemd-pcm")
+            }
+
             Section("Server") {
                 LabeledContent("Port", value: "\(StemdServer.shared.port)")
                 if let base = StemdServer.shared.shareBase() {
@@ -109,7 +123,7 @@ struct DebugView: View {
                 )
             }
         }
-        .navigationTitle("Debug")
+        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             // Poll while the screen is open, quietly: reading the log must not

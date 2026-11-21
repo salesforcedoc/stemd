@@ -1,0 +1,10 @@
+// Base build settings for the app, shared by Debug and Release.
+//
+// The Apple Developer Team ID is per-developer, so it is not committed. Put
+// yours in Local.xcconfig beside this file (copy Local.xcconfig.example to
+// create it). Until you do, the placeholder below is used: the simulator
+// builds fine, and device signing fails until you set your own.
+STEMD_DEVELOPMENT_TEAM = ABCDE12345
+
+// Optional on purpose: a fresh clone has no Local.xcconfig, which is fine.
+#include? "Local.xcconfig"

@@ -14,6 +14,9 @@ final class StemdServer {
     private(set) var tokenRequired = true
     private let bonjour = BonjourAdvertiser()
 
+    /// Remembered across launches, and read by `start` before the server runs.
+    static let savePCMKey = "stemd.savePCM"
+
     var running: Bool { port != 0 }
 
     /// Start the embedded server. Throws with the Rust-side message when it
@@ -27,6 +30,17 @@ final class StemdServer {
         )
         let data = support.appendingPathComponent("stemd", isDirectory: true)
         try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+
+        // Documents is visible in Files, so a saved reference mix can be
+        // pulled off with the Files app or the Files share sheet.
+        let documents = try FileManager.default.url(
+            for: .documentDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let pcm = documents.appendingPathComponent("stemd-pcm", isDirectory: true)
+        try FileManager.default.createDirectory(at: pcm, withIntermediateDirectories: true)
 
         // The Metal device's real limits, for diagnosing a separation that dies
         // on a long track. A single array larger than maxBufferLength cannot be
@@ -57,10 +71,13 @@ final class StemdServer {
             "bind": "0.0.0.0:8420",
             "max_track_secs": 900,
             // Off by default because serving a deck is what this app is for,
-            // and the CDJ sidecar has no way to send a token. The Debug screen
-            // can turn it back on, and that choice is remembered across
+            // and the CDJ sidecar has no way to send a token. The Settings
+            // screen can turn it back on, and that choice is remembered across
             // launches.
             "require_token": false,
+            // Files → On My iPhone → stemd → stemd-pcm.
+            "pcm_dir": pcm.path,
+            "save_pcm": UserDefaults.standard.bool(forKey: Self.savePCMKey),
         ]
 #if targetEnvironment(simulator)
         // A known token lets curl drive the embedded server during development.
@@ -136,6 +153,11 @@ final class StemdServer {
         tokenRequired = required
         UserDefaults.standard.set(required, forKey: Self.tokenPreferenceKey)
         stemd_ios_set_token_required(required ? 1 : 0)
+    }
+
+    /// Keep a WAV copy of each new job's original mix.
+    func setSavePCM(_ save: Bool) {
+        stemd_ios_set_save_pcm(save ? 1 : 0)
     }
 
     /// Loopback: what the app itself uses, and what never needs the local
@@ -294,6 +316,9 @@ struct StemdClient {
     struct Job: Decodable, Identifiable {
         let id: String
         let created: UInt64
+        /// Unix seconds: when the separation was requested and when it settled.
+        let createdUnix: UInt64?
+        let finishedUnix: UInt64?
         let title: String?
         let artist: String?
         let album: String?
@@ -306,9 +331,15 @@ struct StemdClient {
         /// Present on a finished job; track length is frames / sample_rate.
         let frames: Int?
         let sampleRate: UInt32?
+        let channels: Int?
+        /// The stem container the deck asked for: `flac`, `wav`, `mp3`, or a
+        /// headerless `pcm16`/`pcm32` stream.
+        let format: String?
 
         enum CodingKeys: String, CodingKey {
-            case id, created, title, artist, album, state, progress, seconds, realtime, error, stems, frames
+            case id, created, title, artist, album, state, progress, seconds, realtime, error, stems, frames, channels, format
+            case createdUnix = "created_unix"
+            case finishedUnix = "finished_unix"
             case sampleRate = "sample_rate"
         }
     }
@@ -428,12 +459,6 @@ struct StemdClient {
         var request = request("jobs/\(id)/cache", method: "DELETE")
         request.setValue("0", forHTTPHeaderField: "Content-Length")
         _ = try await send(request)
-    }
-
-    /// The URL to hand another device. The token is already in the path from
-    /// the server's own job representation.
-    func shareURL(for stem: Stem) -> URL? {
-        StemdServer.shared.shareBase().flatMap { URL(string: stem.url, relativeTo: $0) }
     }
 
     private func request(

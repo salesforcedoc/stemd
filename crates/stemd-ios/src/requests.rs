@@ -15,7 +15,11 @@ use serde::Serialize;
 
 /// Enough to see a deck's health probes and a few jobs, without the list
 /// growing unbounded behind a screen nobody has open.
-const LIMIT: usize = 200;
+///
+/// A deck polls twice a second, so 200 entries was under two minutes of
+/// history: a failed upload was gone before anyone could read it. A thousand
+/// covers a test run and costs a few hundred kilobytes.
+const LIMIT: usize = 1000;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Entry {

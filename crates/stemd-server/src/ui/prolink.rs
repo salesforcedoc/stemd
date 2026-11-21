@@ -18,38 +18,60 @@ const DOT_RADIUS: f32 = 3.5;
 /// the hint that there is more.
 const VISIBLE_ROWS: f32 = 3.5;
 
-pub fn list(ui: &mut egui::Ui, palette: &Palette, sheen: &mut Sheen, snapshot: Option<&Snapshot>) {
-    let Some(snapshot) = snapshot else {
-        ui.add_space(2.0);
-        muted(
-            ui,
-            palette,
-            "ProLink is off. Start stemd with --prolink to watch for decks.",
-        );
-        return;
-    };
-    if snapshot.decks.is_empty() {
-        ui.add_space(2.0);
-        muted(
-            ui,
-            palette,
-            &format!(
-                "Watching {}. No decks on the network yet.",
-                snapshot.interface
-            ),
-        );
-        return;
+pub fn list(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    sheen: &mut Sheen,
+    snapshot: Option<&Snapshot>,
+    prolink: Option<&crate::prolink::ProLink>,
+) {
+    match snapshot {
+        None => {
+            ui.add_space(2.0);
+            muted(
+                ui,
+                palette,
+                "ProLink is off. Start stemd with --prolink to watch for decks.",
+            );
+        }
+        Some(snapshot) if snapshot.decks.is_empty() => {
+            ui.add_space(2.0);
+            muted(
+                ui,
+                palette,
+                &format!(
+                    "Watching {}. No decks on the network yet.",
+                    snapshot.interface
+                ),
+            );
+        }
+        Some(snapshot) => {
+            egui::ScrollArea::vertical()
+                .id_salt("prolink-decks")
+                .max_height(visible_height(ui))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for deck in &snapshot.decks {
+                        row(ui, palette, sheen, deck);
+                    }
+                });
+        }
     }
 
-    egui::ScrollArea::vertical()
-        .id_salt("prolink-decks")
-        .max_height(visible_height(ui))
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for deck in &snapshot.decks {
-                row(ui, palette, sheen, deck);
-            }
-        });
+    if let Some(prolink) = prolink {
+        ui.add_space(6.0);
+        if ui
+            .small_button("Forget downloaded tracks")
+            .on_hover_text(
+                "Delete the copies stemd fetched from decks and the record that marks \
+                 them as already downloaded. Loading one again fetches and separates it. \
+                 Separated stems are separate; Empty cache removes those.",
+            )
+            .clicked()
+        {
+            prolink.forget_downloads();
+        }
+    }
 }
 
 fn visible_height(ui: &egui::Ui) -> f32 {
@@ -89,15 +111,18 @@ fn row(ui: &mut egui::Ui, palette: &Palette, sheen: &mut Sheen, deck: &crate::pr
             } else {
                 format!("{} deck {}", deck.model, deck.number)
             });
+            // The address stays on the row even while a track is loaded: it is
+            // what a mount or an NFS failure is looked up with.
+            parts.push(deck.address.to_string());
             if let Some(meta) = &loaded.meta
                 && !meta.artist.is_empty()
             {
                 parts.push(meta.artist.clone());
             }
-            let detail = match &loaded.fetch {
-                FetchState::Failed(reason) => reason.clone(),
-                _ => parts.join(" · "),
-            };
+            if let FetchState::Failed(reason) = &loaded.fetch {
+                parts.push(reason.clone());
+            }
+            let detail = parts.join(" · ");
             (
                 title,
                 detail,

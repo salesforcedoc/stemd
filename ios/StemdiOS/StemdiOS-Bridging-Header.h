@@ -16,3 +16,7 @@ void stemd_ios_init_logging(void);
 /// Require (1) or stop requiring (0) the share token. Takes effect
 /// immediately, for clients that cannot send one.
 void stemd_ios_set_token_required(int required);
+
+/// Save (1) or stop saving (0) the pre-separation mix for new jobs. Takes
+/// effect on the next job.
+void stemd_ios_set_save_pcm(int save);

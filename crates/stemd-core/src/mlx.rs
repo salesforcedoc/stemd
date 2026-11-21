@@ -368,19 +368,36 @@ struct WindowSink<'a> {
 #[cfg(target_os = "ios")]
 impl ProgressSink for WindowSink<'_> {
     fn update(&self, progress: Progress) {
-        let count = self.count.max(1) as f32;
-        let fraction = (self.index as f32 + progress.fraction.clamp(0.0, 1.0)) / count;
-        self.inner.update(Progress {
-            stage: progress.stage,
-            completed: progress.completed,
-            total: progress.total,
-            fraction: fraction.clamp(0.0, 1.0),
-            detail: progress.detail,
-        });
+        self.inner
+            .update(window_progress(self.index, self.count, progress));
     }
 
     fn cancelled(&self) -> bool {
         self.inner.cancelled()
+    }
+}
+
+/// Map one window's progress onto the whole track's.
+///
+/// Each window runs its own analysing/separating/reconstructing pass and
+/// restarts its counters, so the inner stage and counts describe that window,
+/// not the track. On the track they are all one separating pass: reporting
+/// them verbatim made a client that draws a bar from `completed/total` run it
+/// backwards every two minutes, and made the stage flip to reconstructing
+/// between windows.
+///
+/// `fraction` was always monotonic across windows. The stage and counters now
+/// are too: separating throughout, in thousandths of the whole track.
+#[cfg(any(target_os = "ios", test))]
+fn window_progress(index: usize, count: usize, progress: Progress) -> Progress {
+    let count = count.max(1) as f32;
+    let fraction = ((index as f32 + progress.fraction.clamp(0.0, 1.0)) / count).clamp(0.0, 1.0);
+    Progress {
+        stage: Stage::Separating,
+        completed: (fraction * 1000.0).round() as u32,
+        total: 1000,
+        fraction,
+        detail: progress.detail,
     }
 }
 
@@ -408,5 +425,46 @@ fn crossfade_append(into: &mut [Vec<f32>], next: Vec<Vec<f32>>, shared: usize) {
     }
     for (c, channel) in into.iter_mut().enumerate() {
         channel.extend_from_slice(&next[c][shared..]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windowed_progress_never_runs_backwards() {
+        // The shape a deck saw on a three-window track: each window restarts
+        // its own 21-chunk counter and dips into reconstructing at its end.
+        let updates = [
+            Progress::counted(Stage::Separating, 17, 21),
+            Progress::new(Stage::Reconstructing),
+            Progress::counted(Stage::Separating, 2, 21),
+            Progress::new(Stage::Reconstructing),
+            Progress::counted(Stage::Separating, 5, 7),
+            Progress::new(Stage::Reconstructing),
+        ];
+        let seen: Vec<_> = updates
+            .into_iter()
+            .enumerate()
+            .map(|(i, progress)| window_progress(i / 2, 3, progress))
+            .collect();
+
+        for pair in seen.windows(2) {
+            assert!(
+                pair[0].fraction <= pair[1].fraction,
+                "fraction went backwards: {:?} -> {:?}",
+                pair[0],
+                pair[1]
+            );
+            assert!(
+                pair[0].completed <= pair[1].completed,
+                "completed went backwards: {} -> {}",
+                pair[0].completed,
+                pair[1].completed
+            );
+        }
+        assert!(seen.iter().all(|p| p.stage == Stage::Separating));
+        assert_eq!(seen[0].total, 1000);
     }
 }

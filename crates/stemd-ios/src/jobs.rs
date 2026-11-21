@@ -6,9 +6,12 @@
 //! deeper queue anyway, so the queue here is the channel's backlog and the API
 //! reports each job's position in it.
 
+use std::any::Any;
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Once;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
@@ -38,6 +41,16 @@ fn plain_extension(filename: &str) -> Option<String> {
         return None;
     }
     Some(ext.to_ascii_lowercase())
+}
+
+/// The name part of an upload's filename, for a file that declares no tags.
+///
+/// Only the last component counts: a client is free to send a path, and the
+/// name here is display text rather than something this server opens.
+fn file_stem(filename: &str) -> Option<String> {
+    let name = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem).trim();
+    (!stem.is_empty()).then(|| stem.to_owned())
 }
 
 /// The identity of one separation.
@@ -108,6 +121,14 @@ pub(crate) fn app_binary_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Seconds since the Unix epoch, for the times shown in the activity log.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Append one line about memory to `debug-memory.log` beside the jobs.
 ///
 /// Written on demand and flushed, because the process it is meant to describe
@@ -146,6 +167,10 @@ pub struct Options {
     pub max_track_secs: f64,
     /// The share token, also written into stem URLs.
     pub token: String,
+    /// Where the original mix is saved when `save_pcm` is on.
+    pub pcm_dir: Option<PathBuf>,
+    /// Start with the original-mix copy enabled.
+    pub save_pcm: bool,
 }
 
 /// Load finished jobs from the jobs root.
@@ -226,12 +251,33 @@ fn load_existing(root: &Path) -> (HashMap<String, Arc<Job>>, u64) {
             0.0
         };
 
+        // Entries written before times were recorded get the detail file's
+        // modification time, which is when the separation finished.
+        let written_unix = std::fs::metadata(dir.join("detail.json"))
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|age| age.as_secs())
+            .unwrap_or(0);
+        let finished_unix = detail
+            .finished_unix
+            .or((written_unix > 0).then_some(written_unix));
+        let created_unix = if detail.created_unix > 0 {
+            detail.created_unix
+        } else {
+            finished_unix
+                .map(|done| done.saturating_sub(detail.separation_secs.round() as u64))
+                .unwrap_or(0)
+        };
+
         let job = Arc::new(Job {
             id: id.clone(),
             key: detail.key,
             model_id: detail.model_id,
             source_hash: Mutex::new(detail.source_hash),
             created,
+            created_unix,
+            finished_unix: Mutex::new(finished_unix),
             title: detail.title,
             artist: detail.artist,
             album: detail.album,
@@ -266,6 +312,8 @@ pub struct Jobs {
     tx: Sender<Work>,
     stop: Arc<AtomicBool>,
     seq: AtomicU64,
+    /// Read when a job is queued, so a toggle applies to the next submission.
+    save_pcm: Arc<AtomicBool>,
 }
 
 impl Jobs {
@@ -276,6 +324,7 @@ impl Jobs {
         // The separation path's own trace, for the failures that take the
         // process down before it can log anywhere else.
         stemd_core::trace::set(options.root.join("debug-memory.log"));
+        install_panic_log();
 
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -285,6 +334,7 @@ impl Jobs {
             models_dir: options.models_dir.clone(),
             preset: options.preset,
             max_track_secs: options.max_track_secs,
+            pcm_dir: options.pcm_dir.clone(),
         };
         std::thread::Builder::new()
             .name("stemd-ios-separate".to_owned())
@@ -300,11 +350,17 @@ impl Jobs {
             tx,
             stop,
             seq: AtomicU64::new(max_created.saturating_add(1)),
+            save_pcm: Arc::new(AtomicBool::new(options.save_pcm)),
         }))
     }
 
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// Keep a copy of each new job's pre-separation mix.
+    pub fn set_save_pcm(&self, save: bool) {
+        self.save_pcm.store(save, Ordering::Relaxed);
     }
 
     pub fn preset_label(&self) -> &'static str {
@@ -388,6 +444,15 @@ impl Jobs {
         tokio::fs::write(&input, &body)
             .await
             .map_err(|e| ApiError::internal(format!("writing {}: {e}", input.display())))?;
+        // The file's own tags name the track better than a filename does, and
+        // a streaming client may send no name at all. A name the client
+        // supplied still wins: it is the one someone chose.
+        let tags = stemd_audio::tags(&input);
+        let title = title
+            .or(tags.title)
+            .or_else(|| filename.and_then(file_stem));
+        let artist = artist.or(tags.artist);
+        let album = album.or(tags.album);
         self.insert_job(
             id,
             seq,
@@ -521,6 +586,8 @@ impl Jobs {
             model_id: self.model_id(),
             source_hash: Mutex::new(source_hash),
             created: seq,
+            created_unix: unix_now(),
+            finished_unix: Mutex::new(None),
             title,
             artist,
             album,
@@ -538,6 +605,7 @@ impl Jobs {
             .send(Work {
                 job: Arc::clone(&job),
                 format,
+                save_pcm: self.save_pcm.load(Ordering::Relaxed),
             })
             .is_err()
         {
@@ -749,6 +817,10 @@ impl Jobs {
 pub struct JobView {
     pub id: String,
     pub created: u64,
+    /// Unix seconds: when the separation was requested and when it settled.
+    pub created_unix: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_unix: Option<u64>,
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
@@ -839,7 +911,12 @@ struct Job {
     /// Behind a lock because a job that already exists is tagged the first time
     /// a client that knows the identity asks for it.
     source_hash: Mutex<String>,
+    /// Sequence number, used to order jobs and to make ids unique.
     created: u64,
+    /// When the client asked for the separation, in Unix seconds.
+    created_unix: u64,
+    /// When the job reached a terminal state, in Unix seconds.
+    finished_unix: Mutex<Option<u64>>,
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
@@ -857,7 +934,21 @@ struct Job {
 }
 
 impl Job {
+    /// The moment this job became done, failed or stopped. Only the first
+    /// terminal transition counts, so a repeated failure report keeps the
+    /// original time.
+    fn mark_finished(&self) -> u64 {
+        let mut finished = self.finished_unix.lock();
+        *finished.get_or_insert_with(unix_now)
+    }
+
     fn set(&self, state: State) {
+        if matches!(
+            state,
+            State::Done { .. } | State::Failed { .. } | State::Cancelled
+        ) {
+            self.mark_finished();
+        }
         *self.state.lock() = state;
     }
 
@@ -908,6 +999,8 @@ impl Job {
         JobView {
             id: self.id.clone(),
             created: self.created,
+            created_unix: self.created_unix,
+            finished_unix: *self.finished_unix.lock(),
             title: self.title.clone(),
             artist: self.artist.clone(),
             album: self.album.clone(),
@@ -958,12 +1051,14 @@ impl ProgressSink for JobSink {
 struct Work {
     job: Arc<Job>,
     format: StemFormat,
+    save_pcm: bool,
 }
 
 struct WorkerConfig {
     models_dir: PathBuf,
     preset: Preset,
     max_track_secs: f64,
+    pcm_dir: Option<PathBuf>,
 }
 
 fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
@@ -988,32 +1083,49 @@ fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
             // between-window release can run. A gigabyte leaves the allocator
             // enough to reuse without letting it become the largest object in
             // the process; the model's live arrays are not affected.
-            stemd_core::memory::set_cache_limit(1 << 30);
-            match separator::load(&config.models_dir, config.preset) {
-                Ok(loaded) => separator = Some(loaded),
-                Err(err) => {
+            let loaded = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                stemd_core::memory::set_cache_limit(1 << 30);
+                separator::load(&config.models_dir, config.preset)
+            }));
+            match loaded {
+                Ok(Ok(loaded)) => separator = Some(loaded),
+                Ok(Err(err)) => {
                     work.job.set(State::Failed {
                         error: format!("{err:#}"),
                     });
                     work.job.release_source();
                     continue;
                 }
+                Err(payload) => {
+                    fail_with_panic(&root, &work.job, "loading the model", payload.as_ref());
+                    work.job.release_source();
+                    continue;
+                }
             }
         }
-        let model: &mut dyn Separate = separator.as_deref_mut().expect("loaded above");
-        match separate_one(model, &work.job, work.format, config.max_track_secs) {
-            Ok(()) => {}
-            Err(err) if Cancelled::caused(&err) => work.job.set(State::Cancelled),
-            Err(err) => work.job.set(State::Failed {
-                error: format!("{err:#}"),
-            }),
+        let healthy = {
+            let model: &mut dyn Separate = separator.as_deref_mut().expect("loaded above");
+            run_job(
+                model,
+                &work.job,
+                work.format,
+                config.max_track_secs,
+                &root,
+                work.save_pcm,
+                config.pcm_dir.as_deref(),
+            )
+        };
+        if !healthy {
+            // A panic can leave MLX's per-thread state suspect; reload the
+            // model on the next job rather than trusting it again.
+            separator = None;
         }
         // MLX keeps freed buffers in its allocator cache instead of returning
         // them. The desktop lets an idle timer collect that; an app has no idle
         // timer, and on a phone the cache from one track is enough to make the
         // next one the process's last. Live arrays -- the model -- are not
         // touched, so this only gives back what the separation left behind.
-        let freed = stemd_core::memory::release();
+        let freed = std::panic::catch_unwind(stemd_core::memory::release).unwrap_or(0);
         if freed > 0 {
             tracing::debug!(
                 "released {:.1} MB of MLX cache after {}",
@@ -1025,11 +1137,93 @@ fn worker(rx: Receiver<Work>, stop: Arc<AtomicBool>, config: WorkerConfig) {
     }
 }
 
+/// Run one job, turning a panic into a failed job rather than a dead worker.
+///
+/// A panic in the model -- an MLX assertion, or an allocation failure surfaced
+/// as one -- used to take the worker thread with it. The queue then stayed
+/// connected but unread, so every later upload failed with "the separation
+/// worker has stopped" and only a server restart recovered. Returns false when
+/// the caller should drop the separator, since a panic can leave MLX's state
+/// suspect.
+fn run_job(
+    separator: &mut dyn Separate,
+    job: &Arc<Job>,
+    format: StemFormat,
+    max_track_secs: f64,
+    root: &Path,
+    save_pcm: bool,
+    pcm_dir: Option<&Path>,
+) -> bool {
+    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        separate_one(separator, job, format, max_track_secs, save_pcm, pcm_dir)
+    }));
+    match outcome {
+        Ok(Ok(())) => true,
+        Ok(Err(err)) if Cancelled::caused(&err) => {
+            job.set(State::Cancelled);
+            true
+        }
+        Ok(Err(err)) => {
+            job.set(State::Failed {
+                error: format!("{err:#}"),
+            });
+            true
+        }
+        Err(payload) => {
+            fail_with_panic(root, job, "separation", payload.as_ref());
+            false
+        }
+    }
+}
+
+/// Record a panic against the job it interrupted, and in the trace.
+fn fail_with_panic(root: &Path, job: &Arc<Job>, doing: &str, payload: &(dyn Any + Send)) {
+    let message = panic_message(payload);
+    tracing::error!("{doing} for {} panicked: {message}", job.id);
+    note(root, &format!("panic during {doing} {}: {message}", job.id));
+    job.set(State::Failed {
+        error: format!("{doing} panicked: {message}"),
+    });
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "a non-string panic payload".to_owned()
+    }
+}
+
+/// Write panics to the trace file, in addition to the usual stderr output.
+///
+/// A panic is otherwise invisible on a device: the app keeps running, the
+/// worker thread quietly ends, and the only symptom is the queue refusing
+/// uploads. The trace line at least names what happened and where.
+fn install_panic_log() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let message = panic_message(info.payload());
+            let at = info
+                .location()
+                .map(|l| format!(" at {}:{}", l.file(), l.line()))
+                .unwrap_or_default();
+            stemd_core::trace::line(&format!("panic{at}: {message}"));
+            previous(info);
+        }));
+    });
+}
+
 fn separate_one(
     separator: &mut dyn Separate,
     job: &Arc<Job>,
     format: StemFormat,
     max_track_secs: f64,
+    save_pcm: bool,
+    pcm_dir: Option<&Path>,
 ) -> Result<()> {
     job.set(State::Running {
         progress: Progress::new(Stage::Analysing),
@@ -1087,6 +1281,12 @@ fn separate_one(
         stemd_core::resample::to_rate(&audio, wanted).context("resampling the input")?
     };
 
+    if save_pcm {
+        if let Some(dir) = pcm_dir {
+            save_original(job, &mix, dir);
+        }
+    }
+
     let sink = JobSink {
         job: Arc::clone(job),
     };
@@ -1134,6 +1334,44 @@ fn separate_one(
         let _ = std::fs::remove_file(path);
     }
     Ok(())
+}
+
+/// Keep the mix the model is about to be given, as a WAV to compare the stems
+/// against. At unity the shipped stems plus their derived third part sum to
+/// exactly this, once each stem's transfer gain is undone.
+fn save_original(job: &Job, mix: &Audio, dir: &Path) {
+    if let Err(err) = std::fs::create_dir_all(dir) {
+        tracing::warn!("creating {}: {err}", dir.display());
+        return;
+    }
+    let title: String = job
+        .title
+        .as_deref()
+        .unwrap_or("")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect();
+    let title = title.trim();
+    let name = if title.is_empty() {
+        format!("{}-original.wav", job.id)
+    } else {
+        format!("{}-{title}-original.wav", job.id)
+    };
+    let path = dir.join(name);
+    match encode_stem(mix, StemFormat::Wav, 1.0) {
+        Ok(bytes) => match std::fs::write(&path, bytes) {
+            Ok(()) => tracing::info!("saved the original mix to {}", path.display()),
+            Err(err) => tracing::warn!("writing {}: {err}", path.display()),
+        },
+        Err(err) => tracing::warn!("encoding the original mix: {err}"),
+    }
 }
 
 fn write_stems(job: &Job, mix: &Audio, stems: &Stems, format: StemFormat) -> Result<Vec<Stem>> {
@@ -1200,6 +1438,12 @@ struct Detail {
     artist: Option<String>,
     #[serde(default)]
     album: Option<String>,
+    /// When the separation was requested and finished, in Unix seconds.
+    /// Absent on entries written before the activity log needed them.
+    #[serde(default)]
+    created_unix: u64,
+    #[serde(default)]
+    finished_unix: Option<u64>,
     format: String,
     sample_rate: u32,
     /// Geometry added with the persistent list. Older entries omit them and the
@@ -1239,6 +1483,8 @@ fn write_detail(
         title: job.title.clone(),
         artist: job.artist.clone(),
         album: job.album.clone(),
+        created_unix: job.created_unix,
+        finished_unix: Some(job.mark_finished()),
         format: format.to_string(),
         sample_rate: mix.sample_rate,
         channels: mix.channels(),
@@ -1307,6 +1553,8 @@ mod tests {
         let view = JobView {
             id: "abc-0".to_owned(),
             created: 0,
+            created_unix: 0,
+            finished_unix: None,
             title: Some("Track".to_owned()),
             artist: None,
             album: None,
@@ -1343,6 +1591,8 @@ mod tests {
             title: Some("Reloaded".to_owned()),
             artist: Some("Artist".to_owned()),
             album: None,
+            created_unix: 1_700_000_000,
+            finished_unix: Some(1_700_000_005),
             format: "flac".to_owned(),
             sample_rate: 44_100,
             channels: 2,
@@ -1374,6 +1624,8 @@ mod tests {
         let view = job.view("tok");
         assert_eq!(view.title.as_deref(), Some("Reloaded"));
         assert_eq!(view.created, 4);
+        assert_eq!(view.created_unix, 1_700_000_000);
+        assert_eq!(view.finished_unix, Some(1_700_000_005));
         assert_eq!(view.frames, Some(441_000));
         assert_eq!(view.sample_rate, Some(44_100));
         assert_eq!(view.stems.len(), 1);
@@ -1383,6 +1635,91 @@ mod tests {
             other => panic!("expected done, got {other:?}"),
         }
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    struct PanickingModel;
+
+    impl Separate for PanickingModel {
+        fn separate(&mut self, _mix: &Audio, _sink: &dyn ProgressSink) -> Result<Stems> {
+            panic!("the model exploded");
+        }
+
+        fn info(&self) -> stemd_core::BackendInfo {
+            stemd_core::BackendInfo {
+                backend: "test".to_owned(),
+                model: "test".to_owned(),
+                sample_rate: 44_100,
+                channels: 2,
+                stems: Vec::new(),
+                device: "cpu".to_owned(),
+            }
+        }
+    }
+
+    #[test]
+    fn a_panicking_model_fails_its_job_instead_of_the_worker() {
+        let root = temp_dir("panic");
+        let dir = root.join("abc123-1");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A real container, so the job reaches the model rather than failing
+        // while decoding.
+        let audio = Audio::new(vec![vec![0.0; 4_410], vec![0.0; 4_410]], 44_100);
+        let input = root.join("in.wav");
+        std::fs::write(&input, encode_stem(&audio, StemFormat::Wav, 1.0).unwrap()).unwrap();
+
+        let job = Arc::new(Job {
+            id: "abc123-1".to_owned(),
+            key: "key".to_owned(),
+            model_id: "model".to_owned(),
+            source_hash: Mutex::new(String::new()),
+            created: 1,
+            created_unix: 0,
+            finished_unix: Mutex::new(None),
+            title: None,
+            artist: None,
+            album: None,
+            source: Mutex::new(Source::File(input)),
+            dir,
+            state: Mutex::new(State::Queued),
+            cancelled: AtomicBool::new(false),
+            stems: Mutex::new(Vec::new()),
+            result: Mutex::new(None),
+        });
+
+        // The panic hook installed by `Jobs::start` is process-wide and this
+        // test deliberately panics, so keep the console quiet about it.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let healthy = run_job(
+            &mut PanickingModel,
+            &job,
+            StemFormat::Flac,
+            900.0,
+            &root,
+            false,
+            None,
+        );
+        std::panic::set_hook(previous);
+
+        assert!(!healthy, "the separator should be dropped after a panic");
+        match &*job.state.lock() {
+            State::Failed { error } => assert!(error.contains("the model exploded"), "{error}"),
+            other => panic!("expected failed, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn an_untagged_file_is_named_by_the_name_part_of_its_path() {
+        assert_eq!(file_stem("track.mp3").as_deref(), Some("track"));
+        assert_eq!(
+            file_stem("a/b/Midnight City.flac").as_deref(),
+            Some("Midnight City")
+        );
+        assert_eq!(file_stem("a\\b\\Track.m4a").as_deref(), Some("Track"));
+        assert_eq!(file_stem("no extension"), Some("no extension".to_owned()));
+        assert_eq!(file_stem("   .mp3"), None);
+        assert_eq!(file_stem(""), None);
     }
 
     #[test]
@@ -1417,6 +1754,8 @@ mod tests {
             title: Some(title.to_owned()),
             artist: None,
             album: None,
+            created_unix: 0,
+            finished_unix: None,
             format: "flac".to_owned(),
             sample_rate: 44_100,
             channels: 2,
@@ -1464,6 +1803,8 @@ mod tests {
             preset: Preset::Fast,
             max_track_secs: 60.0,
             token: "t".to_owned(),
+            pcm_dir: None,
+            save_pcm: false,
         })
         .unwrap();
 
@@ -1509,6 +1850,8 @@ mod tests {
             preset: Preset::Fast,
             max_track_secs: 60.0,
             token: "t".to_owned(),
+            pcm_dir: None,
+            save_pcm: false,
         })
         .unwrap();
         assert_eq!(jobs.count(), 1);
@@ -1549,6 +1892,8 @@ mod tests {
             preset: Preset::Fast,
             max_track_secs: 60.0,
             token: "t".to_owned(),
+            pcm_dir: None,
+            save_pcm: false,
         })
         .unwrap();
         assert!(jobs.lookup("fresh1", StemFormat::Flac).is_none());
@@ -1600,6 +1945,8 @@ mod tests {
             preset: Preset::Fast,
             max_track_secs: 60.0,
             token: "t".to_owned(),
+            pcm_dir: None,
+            save_pcm: false,
         })
         .unwrap();
         assert_eq!(jobs.count(), 2);
@@ -1626,6 +1973,8 @@ mod tests {
             preset: Preset::Fast,
             max_track_secs: 60.0,
             token: "t".to_owned(),
+            pcm_dir: None,
+            save_pcm: false,
         })
         .unwrap();
 

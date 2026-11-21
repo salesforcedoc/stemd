@@ -64,7 +64,7 @@ The iOS server now provides all of it:
 | Health | The desktop fields are included alongside the app's own (`model`, `model_id`, `backend`, `device`, `sample_rate`, `channels`, `stems`). |
 | Raw PCM | Accepted when `format` is `f32le`/`s16le` (or `pcm16`/`pcm32`); `sample_rate` and `channels` come from the query. `output_format` selects the container. |
 | Job document | `stage`, `completed`, `total`, `fraction`, and after completion `sample_rate`, `channels`, `frames`, `format`. |
-| No token | The server starts without requiring one, because the sidecar cannot send it. **Require token** in Debug turns it on, and the choice is remembered. |
+| No token | The server starts without requiring one, because the sidecar cannot send it. **Require token** in Settings turns it on, and the choice is remembered. |
 | Stems | All three are written; the sidecar fetches the two it plays and rebuilds drums itself. |
 
 `output_sample_rate` and `dsp_mode` are accepted and currently ignored: the
@@ -75,7 +75,7 @@ would need the desktop's output-resampling path.
 > [!WARNING]
 >
 > The app starts open so a deck can use it: every endpoint is reachable by any
-> device on the network. Turn **Require token** on in Debug when the network is
+> device on the network. Turn **Require token** on in Settings when the network is
 > not one you trust; the choice survives a relaunch.
 
 ## HTTP API
@@ -149,7 +149,7 @@ a player can restore the level.
 A failed job reports `{"state":"failed","error":"..."}`. A cancelled one is
 `{"state":"cancelled"}`, which is not a failure.
 
-The `GET /v1/server/requests` log is also what the in-app Debug screen shows:
+The `GET /v1/server/requests` log is also what the in-app Settings screen shows:
 each entry has `method`, `path`, `status`, `millis`, `remote` and `loopback`,
 so the app's own polling can be separated from a deck on the LAN.
 
@@ -160,6 +160,8 @@ char *stemd_ios_start(const char *config_json); // {"port":N,"token":"..."} or {
 void  stemd_ios_stop(void);
 void  stemd_ios_free_string(char *s);
 void  stemd_ios_init_logging(void);              // optional; start does it too
+void  stemd_ios_set_token_required(int required);
+void  stemd_ios_set_save_pcm(int save);
 ```
 
 When `require_token` is on, every request except `GET /v1/health` needs the
@@ -178,9 +180,19 @@ The config is JSON:
   "models_dir": "/var/mobile/.../Library/Application Support/stemd/models",
   "preset": "fast",
   "bind": "0.0.0.0:0",
-  "max_track_secs": 900
+  "max_track_secs": 900,
+  "pcm_dir": "/var/mobile/.../Documents/stemd-pcm",
+  "save_pcm": false
 }
 ```
+
+`save_pcm` writes the pre-separation mix (after any resampling to the model's
+rate) to `pcm_dir/<job>-<title>-original.wav`. That is the reference the stems
+sum back to, so it is what a playback defect is compared against; it is off by
+default because it doubles the storage each track uses. The runtime setter
+applies from the next job. Undo each stem's `gain` before comparing: the API
+documents `sample * 1/gain`, and a client that skips it plays hot stems too
+quietly.
 
 `models_dir` defaults to `data_dir/models`. `bind` defaults to every interface
 on an ephemeral port, because the stems are meant to be retrieved by another

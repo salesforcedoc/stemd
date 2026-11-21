@@ -4,16 +4,35 @@ options:
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
+  # The Xcode whose recommended settings this project already follows, so it
+  # does not offer to update them on every open.
+  xcodeVersion: "26.4"
+
+# Shared build settings. The real Apple Developer Team ID is not committed:
+# Config/Base.xcconfig includes the gitignored Config/Local.xcconfig, which
+# sets STEMD_DEVELOPMENT_TEAM. Until a developer creates that file, the
+# placeholder in Base.xcconfig is used, which builds for the simulator and
+# fails device signing.
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
 
 settings:
   base:
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    # Resolved from Config/Base.xcconfig at build time.
+    DEVELOPMENT_TEAM: $(STEMD_DEVELOPMENT_TEAM)
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
 
 targets:
   StemdiOS:
     type: application
     platform: iOS
+    # The target is named StemdiOS but the bundle is stemd.app, so say so
+    # explicitly: xcodegen otherwise names the product after the target and
+    # the scheme then points at the wrong app.
+    productName: stemd
     sources:
       - path: StemdiOS
     settings:
